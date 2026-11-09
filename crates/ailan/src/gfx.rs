@@ -6,14 +6,16 @@ use std::collections::HashMap;
 use windows::core::{Interface, Result, PCWSTR};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1,
+    ID2D1GradientStopCollection1, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_BUFFER_PRECISION_8BPC_UNORM, D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED, D2D1_COLOR_SPACE_SRGB,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
+    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -64,6 +66,15 @@ impl Rect {
     }
     pub fn inset(&self, dx: f32, dy: f32) -> Self {
         Self::new(self.x + dx, self.y + dy, (self.w - 2.0 * dx).max(0.0), (self.h - 2.0 * dy).max(0.0))
+    }
+    pub fn center(&self) -> (f32, f32) {
+        (self.x + self.w * 0.5, self.y + self.h * 0.5)
+    }
+    pub fn scale_from_center(&self, factor: f32) -> Self {
+        let (cx, cy) = self.center();
+        let nw = (self.w * factor).max(0.0);
+        let nh = (self.h * factor).max(0.0);
+        Self::new(cx - nw * 0.5, cy - nh * 0.5, nw, nh)
     }
     fn d2d(&self) -> D2D_RECT_F {
         D2D_RECT_F { left: self.x, top: self.y, right: self.right(), bottom: self.bottom() }
@@ -296,6 +307,116 @@ impl Canvas<'_> {
         self.set(rgb, a);
         let e = D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: radius, radiusY: radius };
         unsafe { self.dc.FillEllipse(&e, self.brush) };
+    }
+
+    fn stops(&self, stops: &[(f32, u32, f32)]) -> Option<ID2D1GradientStopCollection1> {
+        let raw: Vec<D2D1_GRADIENT_STOP> = stops
+            .iter()
+            .map(|&(pos, rgb, a)| D2D1_GRADIENT_STOP { position: pos, color: color(rgb, a * self.alpha) })
+            .collect();
+        unsafe {
+            self.dc
+                .CreateGradientStopCollection(
+                    &raw,
+                    D2D1_COLOR_SPACE_SRGB,
+                    D2D1_COLOR_SPACE_SRGB,
+                    D2D1_BUFFER_PRECISION_8BPC_UNORM,
+                    D2D1_EXTEND_MODE_CLAMP,
+                    D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED,
+                )
+                .ok()
+        }
+    }
+
+    pub fn fill_round_linear(
+        &self,
+        r: Rect,
+        radius: f32,
+        start: (f32, f32),
+        end: (f32, f32),
+        stops: &[(f32, u32, f32)],
+    ) {
+        let Some(coll) = self.stops(stops) else { return };
+        unsafe {
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: Vector2 { X: start.0, Y: start.1 },
+                endPoint: Vector2 { X: end.0, Y: end.1 },
+            };
+            if let Ok(br) = self.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+                self.dc.FillRoundedRectangle(&rr, &br);
+            }
+        }
+    }
+
+    pub fn stroke_round_linear(
+        &self,
+        r: Rect,
+        radius: f32,
+        width: f32,
+        start: (f32, f32),
+        end: (f32, f32),
+        stops: &[(f32, u32, f32)],
+    ) {
+        let Some(coll) = self.stops(stops) else { return };
+        unsafe {
+            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                startPoint: Vector2 { X: start.0, Y: start.1 },
+                endPoint: Vector2 { X: end.0, Y: end.1 },
+            };
+            if let Ok(br) = self.dc.CreateLinearGradientBrush(&props, None, &coll) {
+                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+                self.dc.DrawRoundedRectangle(&rr, &br, width, None);
+            }
+        }
+    }
+
+    pub fn fill_round_radial(
+        &self,
+        r: Rect,
+        radius: f32,
+        center: (f32, f32),
+        rx: f32,
+        ry: f32,
+        stops: &[(f32, u32, f32)],
+    ) {
+        let Some(coll) = self.stops(stops) else { return };
+        unsafe {
+            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+                center: Vector2 { X: center.0, Y: center.1 },
+                gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
+                radiusX: rx.max(1.0),
+                radiusY: ry.max(1.0),
+            };
+            if let Ok(br) = self.dc.CreateRadialGradientBrush(&props, None, &coll) {
+                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+                self.dc.FillRoundedRectangle(&rr, &br);
+            }
+        }
+    }
+
+    pub fn stroke_round_radial(
+        &self,
+        r: Rect,
+        radius: f32,
+        width: f32,
+        center: (f32, f32),
+        rad: f32,
+        stops: &[(f32, u32, f32)],
+    ) {
+        let Some(coll) = self.stops(stops) else { return };
+        unsafe {
+            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+                center: Vector2 { X: center.0, Y: center.1 },
+                gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
+                radiusX: rad.max(1.0),
+                radiusY: rad.max(1.0),
+            };
+            if let Ok(br) = self.dc.CreateRadialGradientBrush(&props, None, &coll) {
+                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+                self.dc.DrawRoundedRectangle(&rr, &br, width, None);
+            }
+        }
     }
 
     fn format(&mut self, font: Font) -> Option<IDWriteTextFormat> {

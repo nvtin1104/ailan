@@ -72,6 +72,8 @@ pub struct App {
     w: Spring,
     h: Spring,
     e: Spring,
+    hover_anim: Spring,
+    tab_pos: Spring,
     mode: Collapsed,
     tab: Tab,
     input: Option<String>,
@@ -79,6 +81,7 @@ pub struct App {
     todo_scroll: usize,
     hits: Vec<Hit>,
     hover: Option<Action>,
+    cursor: Option<(f32, f32)>,
     mouse_inside: bool,
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
@@ -134,6 +137,8 @@ impl App {
             w: Spring::new(cw),
             h: Spring::new(ch),
             e: Spring::new(0.0).with(300.0, 30.0),
+            hover_anim: Spring::new(0.0).with(560.0, 38.0),
+            tab_pos: Spring::new(tab_index(tab)).with(420.0, 34.0),
             mode,
             tab,
             input: None,
@@ -141,6 +146,7 @@ impl App {
             todo_scroll: 0,
             hits: Vec::new(),
             hover: None,
+            cursor: None,
             mouse_inside: false,
             hidden: false,
             art: None,
@@ -167,6 +173,7 @@ impl App {
         if let Some(tab) = init.pin_tab {
             app.expanded = true;
             app.tab = tab;
+            app.tab_pos.value = tab_index(tab);
         }
         app.after_change();
         Ok(app)
@@ -227,14 +234,21 @@ impl App {
     fn after_change(&mut self) {
         let now = sys::now_ms();
         self.mode = self.state.collapsed(now);
-        let (tw, th) = if self.expanded { ui::EXPANDED } else { ui::collapsed_size(self.mode) };
+        let (mut tw, mut th) = if self.expanded { ui::EXPANDED } else { ui::collapsed_size(self.mode) };
+        if !self.expanded && self.mouse_inside {
+            tw += 6.0;
+            th += 1.5;
+        }
         self.w.set_target(tw);
         self.h.set_target(th);
         self.e.set_target(if self.expanded { 1.0 } else { 0.0 });
+        self.tab_pos.set_target(tab_index(self.tab));
         if self.state.settings.reduce_motion {
             self.w.snap();
             self.h.snap();
             self.e.snap();
+            self.hover_anim.snap();
+            self.tab_pos.snap();
         }
         self.needs_draw = true;
         self.arm_timer(now);
@@ -271,6 +285,8 @@ impl App {
             Collapsed::Media => Tab::Music,
             _ => self.state.settings.tab,
         };
+        self.tab_pos.value = tab_index(self.tab);
+        self.tab_pos.set_target(tab_index(self.tab));
         self.state.dismiss_banner();
         self.after_change();
     }
@@ -282,6 +298,7 @@ impl App {
         self.stop_editing();
         self.expanded = false;
         self.hover = None;
+        self.hover_anim.set_target(0.0);
         self.after_change();
     }
 
@@ -502,7 +519,11 @@ impl App {
     }
 
     fn settled(&self) -> bool {
-        self.w.is_settled() && self.h.is_settled() && self.e.is_settled()
+        self.w.is_settled()
+            && self.h.is_settled()
+            && self.e.is_settled()
+            && self.hover_anim.is_settled()
+            && self.tab_pos.is_settled()
     }
 
     pub fn note_wakeup(&mut self) {
@@ -525,6 +546,8 @@ impl App {
         self.w.step(dt);
         self.h.step(dt);
         self.e.step(dt);
+        self.hover_anim.step(dt);
+        self.tab_pos.step(dt);
         let animating = !self.settled();
         self.set_eco(!animating && !self.expanded);
         self.update_region();
@@ -574,6 +597,9 @@ impl App {
             todo_scroll: self.todo_scroll,
             art: self.art.as_ref().map(|(a, b)| (b, (a.width, a.height))),
             hover: self.hover,
+            hover_t: self.hover_anim.value.clamp(0.0, 1.0),
+            tab_pos: self.tab_pos.value.clamp(0.0, 2.0),
+            cursor: self.cursor,
         };
         let state = &self.state;
         let mut hits = Vec::new();
@@ -675,6 +701,11 @@ impl App {
                 _ => {}
             },
             WM_MOUSEMOVE => {
+                let pos = self.mouse_pos(lparam);
+                if self.cursor != Some(pos) {
+                    self.cursor = Some(pos);
+                    self.needs_draw = true;
+                }
                 if !self.mouse_inside {
                     self.mouse_inside = true;
                     let mut tme = TRACKMOUSEEVENT {
@@ -690,27 +721,38 @@ impl App {
                             SetTimer(Some(hwnd), T_HOVER, HOVER_INTENT_MS, None);
                         }
                     }
+                    self.after_change();
                 }
                 if self.expanded {
-                    let (x, y) = self.mouse_pos(lparam);
+                    let (x, y) = pos;
                     let hover = ui::hit_test(&self.hits, x, y);
                     if hover != self.hover {
                         self.hover = hover;
+                        if matches!(hover, Some(a) if !matches!(a, Action::Expand | Action::TodoScroll)) {
+                            self.hover_anim.value = 0.15;
+                            self.hover_anim.set_target(1.0);
+                        } else {
+                            self.hover_anim.set_target(0.0);
+                        }
+                        if self.state.settings.reduce_motion {
+                            self.hover_anim.snap();
+                        }
                         self.needs_draw = true;
                     }
                 }
             }
             WM_MOUSELEAVE => {
                 self.mouse_inside = false;
+                self.cursor = None;
+                self.hover = None;
+                self.hover_anim.set_target(0.0);
                 unsafe {
                     let _ = KillTimer(Some(hwnd), T_HOVER);
-                }
-                if self.hover.take().is_some() {
-                    self.needs_draw = true;
                 }
                 if self.expanded && self.input.is_none() {
                     unsafe { SetTimer(Some(hwnd), T_COLLAPSE, COLLAPSE_DELAY_MS, None) };
                 }
+                self.after_change();
             }
             WM_LBUTTONDOWN => {
                 let (x, y) = self.mouse_pos(lparam);
@@ -765,5 +807,13 @@ impl App {
             _ => return None,
         }
         Some(LRESULT(0))
+    }
+}
+
+fn tab_index(tab: Tab) -> f32 {
+    match tab {
+        Tab::Music => 0.0,
+        Tab::Focus => 1.0,
+        Tab::Todo => 2.0,
     }
 }
