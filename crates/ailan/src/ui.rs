@@ -111,6 +111,14 @@ pub fn pill_rect(w: f32, h: f32) -> Rect {
     Rect::new(((WIN_W - w) / 2.0).round(), 0.0, w, h)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorIcon {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Action {
@@ -131,6 +139,16 @@ pub enum Action {
     TodoToggle(u64),
     TodoDelete(u64),
     TodoScroll,
+}
+
+impl Action {
+    pub fn cursor_icon(&self, input_active: bool) -> CursorIcon {
+        match self {
+            Action::TodoInput if input_active => CursorIcon::Text,
+            Action::TodoScroll => CursorIcon::Default,
+            _ => CursorIcon::Pointer,
+        }
+    }
 }
 
 pub struct Hit {

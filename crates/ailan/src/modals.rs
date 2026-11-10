@@ -9,7 +9,7 @@ use ailan_core::AppState;
 use crate::gfx::{Align, Canvas, Font, Rect};
 use crate::platform::autostart;
 use crate::ui::{
-    draw_glass_pill, AMBER, BG, CORAL, CYAN, G_ADD, G_BOX, G_BOX_CHECKED, G_DELETE, G_DOWN, G_MUSIC, G_PLAY,
+    draw_glass_pill, CursorIcon, AMBER, BG, CORAL, CYAN, G_ADD, G_BOX, G_BOX_CHECKED, G_DELETE, G_DOWN, G_MUSIC, G_PLAY,
     G_SETTINGS, G_TIMER, G_UP, INDIGO, MINT_HI, SUB, TEXT, TEXT_SOFT, VIOLET, WHITE,
 };
 
@@ -79,6 +79,16 @@ pub enum ModalAction {
     SetWaveColor(WaveColor),
     SetWaveSensitivity(u8),
     ToggleArtPulse,
+}
+
+impl ModalAction {
+    pub fn cursor_icon(&self) -> CursorIcon {
+        match self {
+            ModalAction::FocusTodoInput => CursorIcon::Text,
+            ModalAction::DragHeader => CursorIcon::Default,
+            _ => CursorIcon::Pointer,
+        }
+    }
 }
 
 pub struct ModalHit {

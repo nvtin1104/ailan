@@ -20,7 +20,7 @@ use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Direct2D::ID2D1BitmapBrush1;
 use windows::Win32::Graphics::Gdi::{
-    CreateRectRgn, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    CreateRectRgn, GetMonitorInfoW, MonitorFromPoint, ScreenToClient, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -52,6 +52,19 @@ const COLLAPSE_DELAY_MS: u32 = 360;
 const AUDIO_FRAME_MS: u32 = 30;
 const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
+
+fn apply_cursor_icon(icon: ui::CursorIcon) {
+    let id = match icon {
+        ui::CursorIcon::Default => IDC_ARROW,
+        ui::CursorIcon::Pointer => IDC_HAND,
+        ui::CursorIcon::Text => IDC_IBEAM,
+    };
+    unsafe {
+        if let Ok(c) = LoadCursorW(None, id) {
+            let _ = SetCursor(Some(c));
+        }
+    }
+}
 
 #[derive(Default)]
 struct Stats {
@@ -566,6 +579,7 @@ impl App {
                 SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE.0 as isize);
             }
             self.needs_draw = true;
+            self.update_notch_cursor();
             if !self.mouse_inside && self.expanded {
                 unsafe { SetTimer(Some(self.hwnd), T_COLLAPSE, COLLAPSE_DELAY_MS, None) };
             }
@@ -1100,6 +1114,36 @@ impl App {
 
     // ---- window procedures -----------------------------------------------------------
 
+    fn cursor_icon_notch(&self, x: f32, y: f32) -> ui::CursorIcon {
+        match ui::hit_test(&self.hits, x, y) {
+            Some(action) => action.cursor_icon(self.input.is_some()),
+            None => ui::CursorIcon::Default,
+        }
+    }
+
+    fn update_notch_cursor(&self) {
+        if let Some((x, y)) = self.cursor {
+            apply_cursor_icon(self.cursor_icon_notch(x, y));
+        } else {
+            apply_cursor_icon(ui::CursorIcon::Default);
+        }
+    }
+
+    fn cursor_icon_modal(&self, x: f32, y: f32) -> ui::CursorIcon {
+        match modals::hit_test_modal(&self.modal_hits, x, y) {
+            Some(action) => action.cursor_icon(),
+            None => ui::CursorIcon::Default,
+        }
+    }
+
+    fn update_modal_cursor(&self) {
+        if let Some((x, y)) = self.modal_cursor {
+            apply_cursor_icon(self.cursor_icon_modal(x, y));
+        } else {
+            apply_cursor_icon(ui::CursorIcon::Default);
+        }
+    }
+
     fn mouse_pos(&self, lparam: LPARAM) -> (f32, f32) {
         let x = (lparam.0 & 0xFFFF) as i16 as f32 / self.scale;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / self.scale;
@@ -1109,6 +1153,20 @@ impl App {
     pub fn handle_modal(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let hwnd = self.modal_hwnd;
         match msg {
+            WM_SETCURSOR => {
+                let hit_test = (lparam.0 & 0xFFFF) as u32;
+                if hit_test == HTCLIENT {
+                    let mut pt = POINT::default();
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                    }
+                    let x = pt.x as f32 / self.scale;
+                    let y = pt.y as f32 / self.scale;
+                    apply_cursor_icon(self.cursor_icon_modal(x, y));
+                    return Some(LRESULT(1));
+                }
+            }
             WM_MOUSEMOVE => {
                 let pos = self.mouse_pos(lparam);
                 if self.modal_cursor != Some(pos) {
@@ -1128,6 +1186,10 @@ impl App {
                     }
                 }
                 let hover = modals::hit_test_modal(&self.modal_hits, pos.0, pos.1);
+                apply_cursor_icon(match hover {
+                    Some(act) => act.cursor_icon(),
+                    None => ui::CursorIcon::Default,
+                });
                 if hover != self.modal_hover {
                     self.modal_hover = hover;
                     self.modal_needs_draw = true;
@@ -1138,6 +1200,7 @@ impl App {
                 self.modal_cursor = None;
                 self.modal_hover = None;
                 self.modal_needs_draw = true;
+                apply_cursor_icon(ui::CursorIcon::Default);
             }
             WM_LBUTTONDOWN => {
                 let (x, y) = self.mouse_pos(lparam);
@@ -1147,6 +1210,7 @@ impl App {
                     self.modal_todo_input = None;
                     self.modal_needs_draw = true;
                 }
+                self.update_modal_cursor();
             }
             WM_KEYDOWN => {
                 if wparam.0 == 0x1B {
@@ -1254,6 +1318,20 @@ impl App {
                 T_STATS => self.log_stats(),
                 _ => {}
             },
+            WM_SETCURSOR => {
+                let hit_test = (lparam.0 & 0xFFFF) as u32;
+                if hit_test == HTCLIENT {
+                    let mut pt = POINT::default();
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                    }
+                    let x = pt.x as f32 / self.scale;
+                    let y = pt.y as f32 / self.scale;
+                    apply_cursor_icon(self.cursor_icon_notch(x, y));
+                    return Some(LRESULT(1));
+                }
+            }
             WM_MOUSEMOVE => {
                 let pos = self.mouse_pos(lparam);
                 if self.cursor != Some(pos) {
@@ -1279,6 +1357,10 @@ impl App {
                 }
                 let (x, y) = pos;
                 let hover = ui::hit_test(&self.hits, x, y);
+                apply_cursor_icon(match hover {
+                    Some(act) => act.cursor_icon(self.input.is_some()),
+                    None => ui::CursorIcon::Default,
+                });
                 if hover != self.hover {
                     self.hover = hover;
                     if matches!(hover, Some(a) if !matches!(a, Action::Expand | Action::TodoScroll)) {
@@ -1306,6 +1388,7 @@ impl App {
                 if self.expanded && self.input.is_none() {
                     unsafe { SetTimer(Some(hwnd), T_COLLAPSE, COLLAPSE_DELAY_MS, None) };
                 }
+                apply_cursor_icon(ui::CursorIcon::Default);
                 self.after_change();
             }
             WM_LBUTTONDOWN => {
@@ -1314,6 +1397,7 @@ impl App {
                     Some(a) => self.on_action(a),
                     None => self.stop_editing(),
                 }
+                self.update_notch_cursor();
             }
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16;
