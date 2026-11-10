@@ -5,7 +5,7 @@ use windows::core::{implement, Result, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::Media::Audio::Endpoints::{
-    IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+    IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl, IAudioMeterInformation,
 };
 use windows::Win32::Media::Audio::{
     eConsole, eRender, EDataFlow, ERole, IMMDevice, IMMDeviceEnumerator, IMMNotificationClient,
@@ -62,6 +62,7 @@ pub struct Audio {
     enumerator: IMMDeviceEnumerator,
     device_cb: IMMNotificationClient,
     endpoint: Option<(IAudioEndpointVolume, IAudioEndpointVolumeCallback)>,
+    meter: Option<IAudioMeterInformation>,
 }
 
 impl Audio {
@@ -69,7 +70,7 @@ impl Audio {
         let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
         let device_cb: IMMNotificationClient = DeviceCallback { sink: sink.clone() }.into();
         unsafe { enumerator.RegisterEndpointNotificationCallback(&device_cb)? };
-        let mut a = Self { sink, enumerator, device_cb, endpoint: None };
+        let mut a = Self { sink, enumerator, device_cb, endpoint: None, meter: None };
         a.rebind();
         Ok(a)
     }
@@ -94,12 +95,31 @@ impl Audio {
             let muted = volume.GetMute()?.as_bool();
             self.sink.send(AppEvent::AudioDevice { name, headphones });
             self.sink.send(AppEvent::Volume { level, muted });
+            self.meter = device.Activate::<IAudioMeterInformation>(CLSCTX_ALL, None).ok();
             self.endpoint = Some((volume, cb));
         }
         Ok(())
     }
 
+    /// Reads real-time output audio peak (`0.0..=1.0`) and stereo L/R peaks from Windows Core Audio.
+    pub fn sample_peaks(&self) -> (f32, [f32; 2]) {
+        let Some(meter) = &self.meter else {
+            return (0.0, [0.0, 0.0]);
+        };
+        unsafe {
+            let peak = meter.GetPeakValue().unwrap_or(0.0).clamp(0.0, 1.0);
+            let mut ch = [0.0f32; 8];
+            let n = meter.GetMeteringChannelCount().unwrap_or(0).min(8) as usize;
+            if n >= 2 && meter.GetChannelsPeakValues(&mut ch[..n]).is_ok() {
+                (peak, [ch[0].clamp(0.0, 1.0), ch[1].clamp(0.0, 1.0)])
+            } else {
+                (peak, [peak, peak])
+            }
+        }
+    }
+
     fn unbind(&mut self) {
+        self.meter = None;
         if let Some((volume, cb)) = self.endpoint.take() {
             unsafe {
                 let _ = volume.UnregisterControlChangeNotify(&cb);

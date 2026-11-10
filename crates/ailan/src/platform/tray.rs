@@ -25,7 +25,9 @@ pub struct Tray {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCmd {
-    Autostart = 1,
+    AddActivity = 1,
+    Settings,
+    Autostart,
     Minimal,
     Language,
     About,
@@ -107,9 +109,17 @@ impl Tray {
             let _ = SetForegroundWindow(self.hwnd);
             let id = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, None, self.hwnd, None);
             let _ = DestroyMenu(menu);
-            [MenuCmd::Autostart, MenuCmd::Minimal, MenuCmd::Language, MenuCmd::About, MenuCmd::Exit]
-                .into_iter()
-                .find(|c| *c as i32 == id.0)
+            [
+                MenuCmd::AddActivity,
+                MenuCmd::Settings,
+                MenuCmd::Autostart,
+                MenuCmd::Minimal,
+                MenuCmd::Language,
+                MenuCmd::About,
+                MenuCmd::Exit,
+            ]
+            .into_iter()
+            .find(|c| *c as i32 == id.0)
         }
     }
 }

@@ -31,7 +31,12 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
         add(s.osd.as_ref().map(|o| o.until));
         add(s.banner.as_ref().map(|b| b.until));
 
-        let shows_clock = view.expanded || s.collapsed(now) == Collapsed::Clock;
+        let mode = s.collapsed(now);
+        let shows_clock = (view.expanded && s.settings.hover_ui.show_clock)
+            || mode == Collapsed::Clock
+            || (mode == Collapsed::Minimal
+                && !s.settings.minimal_ui.hide_when_idle
+                && s.settings.minimal_ui.show_clock);
         if shows_clock {
             add(Some(time::next_minute(now)));
         }
@@ -46,6 +51,10 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
                 // Collapsed shows whole minutes remaining.
                 let r = rem % time::MINUTE;
                 add(Some(now + if r == 0 { time::MINUTE } else { r }));
+                // Also wake when the 5s minute-peek window finishes so it can switch back to Music.
+                if s.settings.priority.smart_minute_peek {
+                    add(s.focus_peek_deadline(now));
+                }
             }
         }
 
@@ -60,7 +69,7 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::event::{AppEvent, MediaInfo};
-    use crate::settings::{Data, Settings};
+    use crate::settings::{Data, NotchMode, Settings};
     use crate::time::MINUTE;
 
     fn view(expanded: bool, tab: Tab) -> View {
@@ -68,27 +77,28 @@ mod tests {
     }
 
     #[test]
-    fn idle_wakes_once_per_minute() {
-        let s = AppState::new(Settings::default(), Data::default(), 0);
+    fn idle_wakes_once_per_minute_when_clock_shown() {
+        let mut s = AppState::new(Settings::default(), Data::default(), 0);
+        s.settings.mode = NotchMode::AlwaysDynamic;
         assert_eq!(next_deadline(&s, 61_000, view(false, Tab::Music)), Some(120_000));
     }
 
     #[test]
     fn minimal_and_hidden_idle_never_wake() {
-        let mut s = AppState::new(Settings::default(), Data::default(), 0);
-        s.settings.minimal = true;
+        let s = AppState::new(Settings::default(), Data::default(), 0);
+        // Default mode is DynamicWhenActive -> idle is Minimal with no clock -> no wakeup!
         assert_eq!(next_deadline(&s, 0, view(false, Tab::Music)), None);
-        s.settings.minimal = false;
         assert_eq!(next_deadline(&s, 0, View { expanded: false, tab: Tab::Music, hidden: true }), None);
     }
 
     #[test]
-    fn timer_ticks_per_second_only_when_visible() {
+    fn timer_ticks_per_second_only_when_visible_and_wakes_after_peek() {
         let mut s = AppState::new(Settings::default(), Data::default(), 0);
-        s.settings.minimal = true;
         s.pomodoro.start(0);
-        // Collapsed: next whole minute of remaining time.
-        assert_eq!(next_deadline(&s, 500, view(false, Tab::Music)), Some(MINUTE));
+        // At t=500ms, Focus is inside the 5_000ms peek window -> wakes at 5_000ms!
+        assert_eq!(next_deadline(&s, 500, view(false, Tab::Music)), Some(5_000));
+        // After 5_000ms (e.g. t=6_000ms), wakes at the next whole minute (60_000ms).
+        assert_eq!(next_deadline(&s, 6_000, view(false, Tab::Music)), Some(MINUTE));
         // Expanded on Focus: next second.
         assert_eq!(next_deadline(&s, 500, view(true, Tab::Focus)), Some(1000));
     }
@@ -96,7 +106,6 @@ mod tests {
     #[test]
     fn media_progress_ticks_only_on_music_tab() {
         let mut s = AppState::new(Settings::default(), Data::default(), 0);
-        s.settings.minimal = true;
         s.apply(
             AppEvent::Media(Some(MediaInfo {
                 title: "t".into(),

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::event::{AppEvent, Artwork, Battery, MediaInfo, Network};
 use crate::i18n::{t, Key, Lang};
-use crate::settings::{Data, Settings};
-use crate::time;
+use crate::settings::{Data, NotchMode, Settings, Tab};
+use crate::time::{self, MINUTE};
 use crate::timer::{Phase, Pomodoro};
 
 pub const OSD_MS: i64 = 1_500;
@@ -53,6 +53,7 @@ pub enum Collapsed {
     Banner,
     Timer,
     Media,
+    Todo,
     Clock,
     Minimal,
 }
@@ -83,6 +84,8 @@ pub struct AppState {
     pub pomodoro: Pomodoro,
     pub osd: Option<Osd>,
     pub banner: Option<Banner>,
+    /// Explicit peek deadline when Focus is manually started/resumed.
+    pub focus_peek_until: Option<i64>,
 
     save_due: Option<i64>,
     settings_dirty: bool,
@@ -106,6 +109,7 @@ impl AppState {
             pomodoro,
             osd: None,
             banner: None,
+            focus_peek_until: None,
             save_due: None,
             settings_dirty: false,
             data_dirty: false,
@@ -120,6 +124,65 @@ impl AppState {
         self.banner = Some(Banner { icon, title: title.into(), body: body.into(), until });
     }
 
+    /// Check whether a specific activity is currently running/active.
+    pub fn is_activity_running(&self, tab: Tab) -> bool {
+        match tab {
+            Tab::Focus => self.pomodoro.is_running(),
+            Tab::Music => {
+                self.media.as_ref().is_some_and(|m| m.playing)
+                    || (self.settings.media_active && self.media.is_some())
+            }
+            Tab::Todo => self.settings.todo_active && self.data.todos.pending_count() > 0,
+        }
+    }
+
+    /// Running activities ordered by the user's priority configuration.
+    pub fn running_activities(&self) -> Vec<Tab> {
+        self.settings
+            .priority
+            .normalized_order()
+            .into_iter()
+            .filter(|&t| self.is_activity_running(t))
+            .collect()
+    }
+
+    /// True when at least one activity is actively running.
+    pub fn has_running_activity(&self) -> bool {
+        self.is_activity_running(Tab::Focus)
+            || self.is_activity_running(Tab::Music)
+            || self.is_activity_running(Tab::Todo)
+    }
+
+    /// When Focus is running, returns `Some(until_ms)` if Focus is currently within its
+    /// per-minute update peek window (`peek_seconds` after each whole-minute mark or start).
+    pub fn focus_peek_deadline(&self, now: i64) -> Option<i64> {
+        if !self.pomodoro.is_running() {
+            return None;
+        }
+        let peek_ms = (self.settings.priority.peek_seconds.clamp(1, 30) as i64) * 1_000;
+        if let Some(until) = self.focus_peek_until {
+            if now < until {
+                return Some(until);
+            }
+        }
+        let rem = self.pomodoro.remaining(now);
+        if rem <= 0 {
+            return None;
+        }
+        let elapsed_since_min = (MINUTE - (rem % MINUTE)) % MINUTE;
+        if elapsed_since_min < peek_ms {
+            Some(now + (peek_ms - elapsed_since_min))
+        } else {
+            None
+        }
+    }
+
+    /// Trigger an immediate Focus peek window (e.g. when starting or toggling Focus).
+    pub fn note_focus_started(&mut self, now: i64) {
+        let peek_ms = (self.settings.priority.peek_seconds.clamp(1, 30) as i64) * 1_000;
+        self.focus_peek_until = Some(now + peek_ms);
+    }
+
     /// Apply a provider event. Returns `true` if anything visible changed.
     pub fn apply(&mut self, ev: AppEvent, now: i64) -> bool {
         let lang = self.lang();
@@ -128,6 +191,9 @@ impl AppState {
                 let key_changed = self.media.as_ref().map(|x| &x.track_key) != m.as_ref().map(|x| &x.track_key);
                 if key_changed && self.art.as_ref().map(|a| &a.track_key) != m.as_ref().map(|x| &x.track_key) {
                     self.art = None;
+                }
+                if m.is_none() {
+                    self.settings.media_active = false;
                 }
                 let changed = self.media != m;
                 self.media = m;
@@ -202,7 +268,11 @@ impl AppState {
         if self.banner.as_ref().is_some_and(|b| b.until <= now) {
             self.banner = None;
         }
+        if self.focus_peek_until.is_some_and(|u| u <= now) {
+            self.focus_peek_until = None;
+        }
         if let Some(finished) = self.pomodoro.poll(now) {
+            self.focus_peek_until = None;
             let (icon, body) = match finished {
                 Phase::Focus => {
                     self.data.add_focus(time::local_day(now, self.offset_min));
@@ -224,19 +294,45 @@ impl AppState {
         out
     }
 
+    /// Primary activity to display according to priority and smart minute peek.
+    pub fn primary_activity(&self, now: i64) -> Option<Tab> {
+        let running = self.running_activities();
+        if running.is_empty() {
+            return None;
+        }
+        if running.len() > 1 && self.settings.priority.smart_minute_peek {
+            let focus_peeking = self.focus_peek_deadline(now).is_some();
+            for &tab in &running {
+                if tab == Tab::Focus && !focus_peeking {
+                    continue;
+                }
+                return Some(tab);
+            }
+        }
+        running.first().copied()
+    }
+
     pub fn collapsed(&self, now: i64) -> Collapsed {
         if self.osd.as_ref().is_some_and(|o| o.until > now) {
-            Collapsed::Osd
-        } else if self.banner.as_ref().is_some_and(|b| b.until > now) {
-            Collapsed::Banner
-        } else if self.pomodoro.is_running() {
-            Collapsed::Timer
-        } else if self.media.as_ref().is_some_and(|m| m.playing) {
-            Collapsed::Media
-        } else if self.settings.minimal {
-            Collapsed::Minimal
-        } else {
-            Collapsed::Clock
+            return Collapsed::Osd;
+        }
+        if self.banner.as_ref().is_some_and(|b| b.until > now) {
+            return Collapsed::Banner;
+        }
+        if self.settings.minimal || self.settings.mode == NotchMode::MinimalOnly {
+            return Collapsed::Minimal;
+        }
+        if let Some(active) = self.primary_activity(now) {
+            return match active {
+                Tab::Focus => Collapsed::Timer,
+                Tab::Music => Collapsed::Media,
+                Tab::Todo => Collapsed::Todo,
+            };
+        }
+        match self.settings.mode {
+            NotchMode::DynamicWhenActive => Collapsed::Minimal,
+            NotchMode::AlwaysDynamic => Collapsed::Clock,
+            NotchMode::MinimalOnly => Collapsed::Minimal,
         }
     }
 
@@ -307,18 +403,33 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_priority() {
+    fn dynamic_only_when_active_and_smart_minute_peek() {
         let mut s = state();
-        assert_eq!(s.collapsed(0), Collapsed::Clock);
-        s.settings.minimal = true;
+        // No activity running -> Minimal by default in DynamicWhenActive mode
         assert_eq!(s.collapsed(0), Collapsed::Minimal);
+
+        // Music starts playing -> Media
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
         assert_eq!(s.collapsed(0), Collapsed::Media);
+
+        // Focus starts at t=0 -> peeks for 5s (0..5_000), then yields to Media (5_000..60_000),
+        // then peeks again at the next minute update (60_000..65_000)!
         s.pomodoro.start(0);
         assert_eq!(s.collapsed(0), Collapsed::Timer);
-        s.apply(AppEvent::Battery(Some(Battery { percent: 50, charging: false })), 0);
-        s.apply(AppEvent::Battery(Some(Battery { percent: 50, charging: true })), 0);
-        assert_eq!(s.collapsed(0), Collapsed::Banner);
+        assert_eq!(s.collapsed(4_999), Collapsed::Timer);
+        assert_eq!(s.collapsed(5_000), Collapsed::Media);
+        assert_eq!(s.collapsed(59_999), Collapsed::Media);
+        assert_eq!(s.collapsed(60_000), Collapsed::Timer);
+        assert_eq!(s.collapsed(64_999), Collapsed::Timer);
+        assert_eq!(s.collapsed(65_000), Collapsed::Media);
+
+        // If smart_minute_peek is disabled, Focus stays visible continuously (since Focus > Music)
+        s.settings.priority.smart_minute_peek = false;
+        assert_eq!(s.collapsed(10_000), Collapsed::Timer);
+
+        // Reordering priority so Music > Focus shows Media
+        s.settings.priority.move_up(Tab::Music);
+        assert_eq!(s.collapsed(0), Collapsed::Media);
     }
 
     #[test]
@@ -329,7 +440,6 @@ mod tests {
         assert!(!s.apply(AppEvent::Artwork(Some(art("stale"))), 0));
         assert!(s.apply(AppEvent::Artwork(Some(art("a"))), 0));
         assert!(s.art.is_some());
-        // Same track, new playback state → keep art.
         s.apply(AppEvent::Media(Some(media("a", false))), 0);
         assert!(s.art.is_some());
         s.apply(AppEvent::Media(Some(media("b", true))), 0);

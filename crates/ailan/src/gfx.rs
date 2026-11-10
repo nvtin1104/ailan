@@ -6,16 +6,17 @@ use std::collections::HashMap;
 use windows::core::{Interface, Result, PCWSTR};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW,
+    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1,
-    ID2D1GradientStopCollection1, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
+    ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_BUFFER_PRECISION_8BPC_UNORM, D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED, D2D1_COLOR_SPACE_SRGB,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
+    D2D1_STROKE_STYLE_PROPERTIES1, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -67,15 +68,6 @@ impl Rect {
     pub fn inset(&self, dx: f32, dy: f32) -> Self {
         Self::new(self.x + dx, self.y + dy, (self.w - 2.0 * dx).max(0.0), (self.h - 2.0 * dy).max(0.0))
     }
-    pub fn center(&self) -> (f32, f32) {
-        (self.x + self.w * 0.5, self.y + self.h * 0.5)
-    }
-    pub fn scale_from_center(&self, factor: f32) -> Self {
-        let (cx, cy) = self.center();
-        let nw = (self.w * factor).max(0.0);
-        let nh = (self.h * factor).max(0.0);
-        Self::new(cx - nw * 0.5, cy - nh * 0.5, nw, nh)
-    }
     fn d2d(&self) -> D2D_RECT_F {
         D2D_RECT_F { left: self.x, top: self.y, right: self.right(), bottom: self.bottom() }
     }
@@ -109,6 +101,7 @@ impl Font {
 pub struct Gfx {
     _d3d: ID3D11Device,
     dxgi: IDXGIDevice,
+    factory: ID2D1Factory1,
     dc: ID2D1DeviceContext,
     swapchain: IDXGISwapChain1,
     dcomp: IDCompositionDevice,
@@ -116,6 +109,7 @@ pub struct Gfx {
     _visual: IDCompositionVisual,
     dwrite: IDWriteFactory,
     brush: ID2D1SolidColorBrush,
+    round_stroke: Option<ID2D1StrokeStyle>,
     formats: HashMap<Font, IDWriteTextFormat>,
     pub width: u32,
     pub height: u32,
@@ -170,10 +164,17 @@ impl Gfx {
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let brush = dc.CreateSolidColorBrush(&color(0xFFFFFF, 1.0), None)?;
+            let stroke_props = D2D1_STROKE_STYLE_PROPERTIES1 {
+                startCap: D2D1_CAP_STYLE_ROUND,
+                endCap: D2D1_CAP_STYLE_ROUND,
+                ..Default::default()
+            };
+            let round_stroke = factory.CreateStrokeStyle(&stroke_props, None).and_then(|s| s.cast::<ID2D1StrokeStyle>()).ok();
 
             let mut g = Self {
                 _d3d: d3d,
                 dxgi,
+                factory,
                 dc,
                 swapchain,
                 dcomp,
@@ -181,6 +182,7 @@ impl Gfx {
                 _visual: visual,
                 dwrite,
                 brush,
+                round_stroke,
                 formats: HashMap::new(),
                 width: width.max(1),
                 height: height.max(1),
@@ -229,7 +231,15 @@ impl Gfx {
             self.dc.Clear(Some(&color(0, 0.0)));
         }
         {
-            let mut cv = Canvas { dc: &self.dc, brush: &self.brush, dwrite: &self.dwrite, formats: &mut self.formats, alpha: 1.0 };
+            let mut cv = Canvas {
+                factory: &self.factory,
+                dc: &self.dc,
+                brush: &self.brush,
+                round_stroke: self.round_stroke.as_ref(),
+                dwrite: &self.dwrite,
+                formats: &mut self.formats,
+                alpha: 1.0,
+            };
             f(&mut cv);
         }
         unsafe {
@@ -279,8 +289,10 @@ pub fn color(rgb: u32, a: f32) -> D2D1_COLOR_F {
 /// Immediate-mode drawing helpers in DIPs. `alpha` multiplies every color
 /// (used for cross-fading collapsed/expanded content).
 pub struct Canvas<'a> {
+    factory: &'a ID2D1Factory1,
     dc: &'a ID2D1DeviceContext,
     brush: &'a ID2D1SolidColorBrush,
+    round_stroke: Option<&'a ID2D1StrokeStyle>,
     dwrite: &'a IDWriteFactory,
     formats: &'a mut HashMap<Font, IDWriteTextFormat>,
     pub alpha: f32,
@@ -289,6 +301,11 @@ pub struct Canvas<'a> {
 impl Canvas<'_> {
     fn set(&self, rgb: u32, a: f32) {
         unsafe { self.brush.SetColor(&color(rgb, a * self.alpha)) };
+    }
+
+    pub fn fill_rect(&self, r: Rect, rgb: u32, a: f32) {
+        self.set(rgb, a);
+        unsafe { self.dc.FillRectangle(&r.d2d(), self.brush) };
     }
 
     pub fn fill_round(&self, r: Rect, radius: f32, rgb: u32, a: f32) {
@@ -309,112 +326,111 @@ impl Canvas<'_> {
         unsafe { self.dc.FillEllipse(&e, self.brush) };
     }
 
-    fn stops(&self, stops: &[(f32, u32, f32)]) -> Option<ID2D1GradientStopCollection1> {
-        let raw: Vec<D2D1_GRADIENT_STOP> = stops
-            .iter()
-            .map(|&(pos, rgb, a)| D2D1_GRADIENT_STOP { position: pos, color: color(rgb, a * self.alpha) })
-            .collect();
-        unsafe {
-            self.dc
-                .CreateGradientStopCollection(
-                    &raw,
-                    D2D1_COLOR_SPACE_SRGB,
-                    D2D1_COLOR_SPACE_SRGB,
-                    D2D1_BUFFER_PRECISION_8BPC_UNORM,
-                    D2D1_EXTEND_MODE_CLAMP,
-                    D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED,
-                )
-                .ok()
-        }
+    pub fn stroke_circle(&self, cx: f32, cy: f32, radius: f32, width: f32, rgb: u32, a: f32) {
+        self.set(rgb, a);
+        let e = D2D1_ELLIPSE { point: Vector2 { X: cx, Y: cy }, radiusX: radius, radiusY: radius };
+        unsafe { self.dc.DrawEllipse(&e, self.brush, width, None) };
     }
 
-    pub fn fill_round_linear(
-        &self,
-        r: Rect,
-        radius: f32,
-        start: (f32, f32),
-        end: (f32, f32),
-        stops: &[(f32, u32, f32)],
-    ) {
-        let Some(coll) = self.stops(stops) else { return };
+    /// Stroke a clockwise circular arc starting at `start_deg` (-90.0 = 12 o'clock)
+    /// and sweeping `sweep_deg` degrees, with round line caps.
+    pub fn stroke_arc(&self, cx: f32, cy: f32, radius: f32, start_deg: f32, sweep_deg: f32, width: f32, rgb: u32, a: f32) {
+        let sweep = sweep_deg.clamp(0.0, 360.0);
+        if sweep <= 0.5 {
+            return;
+        }
+        if sweep >= 359.5 {
+            self.stroke_circle(cx, cy, radius, width, rgb, a);
+            return;
+        }
+        let s_rad = start_deg.to_radians();
+        let e_rad = (start_deg + sweep).to_radians();
+        let start_pt = Vector2 { X: cx + radius * s_rad.cos(), Y: cy + radius * s_rad.sin() };
+        let end_pt = Vector2 { X: cx + radius * e_rad.cos(), Y: cy + radius * e_rad.sin() };
+        let arc_size = if sweep > 180.0 { D2D1_ARC_SIZE_LARGE } else { D2D1_ARC_SIZE_SMALL };
+
         unsafe {
-            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                startPoint: Vector2 { X: start.0, Y: start.1 },
-                endPoint: Vector2 { X: end.0, Y: end.1 },
-            };
-            if let Ok(br) = self.dc.CreateLinearGradientBrush(&props, None, &coll) {
-                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
-                self.dc.FillRoundedRectangle(&rr, &br);
+            let Ok(path) = self.factory.CreatePathGeometry() else { return };
+            let Ok(sink) = path.Open() else { return };
+            sink.BeginFigure(start_pt, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: end_pt,
+                size: D2D_SIZE_F { width: radius, height: radius },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: arc_size,
+            });
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            if sink.Close().is_ok() {
+                self.set(rgb, a);
+                self.dc.DrawGeometry(&path, self.brush, width, self.round_stroke);
             }
         }
     }
 
-    pub fn stroke_round_linear(
-        &self,
-        r: Rect,
-        radius: f32,
-        width: f32,
-        start: (f32, f32),
-        end: (f32, f32),
-        stops: &[(f32, u32, f32)],
-    ) {
-        let Some(coll) = self.stops(stops) else { return };
-        unsafe {
-            let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                startPoint: Vector2 { X: start.0, Y: start.1 },
-                endPoint: Vector2 { X: end.0, Y: end.1 },
-            };
-            if let Ok(br) = self.dc.CreateLinearGradientBrush(&props, None, &coll) {
-                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
-                self.dc.DrawRoundedRectangle(&rr, &br, width, None);
-            }
+    /// Fill the seamless hardware-notch silhouette with concave top ears (`ear`) on both
+    /// left and right sides at `y = 0` and rounded convex bottom corners (`radius`).
+    pub fn fill_notch(&self, r: Rect, radius: f32, ear: f32, rgb: u32, a: f32) {
+        let e = ear.max(0.0).min(r.h);
+        let rad = radius.max(0.0).min(r.w * 0.5).min((r.h - e).max(0.0));
+        if e < 0.5 {
+            let shell = Rect::new(r.x, -rad, r.w, r.h + rad);
+            self.fill_round(shell, rad, rgb, a);
+            return;
         }
-    }
-
-    pub fn fill_round_radial(
-        &self,
-        r: Rect,
-        radius: f32,
-        center: (f32, f32),
-        rx: f32,
-        ry: f32,
-        stops: &[(f32, u32, f32)],
-    ) {
-        let Some(coll) = self.stops(stops) else { return };
         unsafe {
-            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
-                center: Vector2 { X: center.0, Y: center.1 },
-                gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
-                radiusX: rx.max(1.0),
-                radiusY: ry.max(1.0),
-            };
-            if let Ok(br) = self.dc.CreateRadialGradientBrush(&props, None, &coll) {
-                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
-                self.dc.FillRoundedRectangle(&rr, &br);
+            let Ok(path) = self.factory.CreatePathGeometry() else { return };
+            let Ok(sink) = path.Open() else { return };
+
+            let left = r.x;
+            let right = r.right();
+            let bot = r.bottom();
+
+            sink.BeginFigure(Vector2 { X: left - e, Y: 0.0 }, D2D1_FIGURE_BEGIN_FILLED);
+            sink.AddLine(Vector2 { X: right + e, Y: 0.0 });
+            // Right top concave ear: (right + e, 0) -> (right, e) around center (right + e, e)
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: Vector2 { X: right, Y: e },
+                size: D2D_SIZE_F { width: e, height: e },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            });
+            sink.AddLine(Vector2 { X: right, Y: bot - rad });
+            // Bottom-right convex corner: (right, bot - rad) -> (right - rad, bot)
+            if rad > 0.5 {
+                sink.AddArc(&D2D1_ARC_SEGMENT {
+                    point: Vector2 { X: right - rad, Y: bot },
+                    size: D2D_SIZE_F { width: rad, height: rad },
+                    rotationAngle: 0.0,
+                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    arcSize: D2D1_ARC_SIZE_SMALL,
+                });
             }
-        }
-    }
-
-    pub fn stroke_round_radial(
-        &self,
-        r: Rect,
-        radius: f32,
-        width: f32,
-        center: (f32, f32),
-        rad: f32,
-        stops: &[(f32, u32, f32)],
-    ) {
-        let Some(coll) = self.stops(stops) else { return };
-        unsafe {
-            let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
-                center: Vector2 { X: center.0, Y: center.1 },
-                gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
-                radiusX: rad.max(1.0),
-                radiusY: rad.max(1.0),
-            };
-            if let Ok(br) = self.dc.CreateRadialGradientBrush(&props, None, &coll) {
-                let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
-                self.dc.DrawRoundedRectangle(&rr, &br, width, None);
+            sink.AddLine(Vector2 { X: left + rad, Y: bot });
+            // Bottom-left convex corner: (left + rad, bot) -> (left, bot - rad)
+            if rad > 0.5 {
+                sink.AddArc(&D2D1_ARC_SEGMENT {
+                    point: Vector2 { X: left, Y: bot - rad },
+                    size: D2D_SIZE_F { width: rad, height: rad },
+                    rotationAngle: 0.0,
+                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    arcSize: D2D1_ARC_SIZE_SMALL,
+                });
+            }
+            sink.AddLine(Vector2 { X: left, Y: e });
+            // Left top concave ear: (left, e) -> (left - e, 0) around center (left - e, e)
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: Vector2 { X: left - e, Y: 0.0 },
+                size: D2D_SIZE_F { width: e, height: e },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            });
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            if sink.Close().is_ok() {
+                self.set(rgb, a);
+                self.dc.FillGeometry(&path, self.brush, None);
             }
         }
     }
