@@ -65,8 +65,7 @@ fn run(t0: Instant) -> Result<()> {
         _ => None,
     });
     let initial_modal = std::env::args().find_map(|a| match a.as_str() {
-        "--settings" => Some(ModalKind::Settings),
-        "--add" => Some(ModalKind::AddActivity),
+        "--settings" | "--hub" => Some(ModalKind::Settings),
         _ => None,
     });
 
@@ -168,7 +167,7 @@ fn create_window() -> Result<HWND> {
         };
         RegisterClassExW(&wc);
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class,
             w!("Ailan"),
             WS_POPUP,
@@ -198,9 +197,9 @@ fn create_modal_window() -> Result<HWND> {
         };
         RegisterClassExW(&wc);
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             class,
-            w!("Ailan Settings"),
+            w!("Ailan Control Hub"),
             WS_POPUP,
             0,
             0,

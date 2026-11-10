@@ -1,6 +1,6 @@
 //! The notch window: owns state, routes OS messages, paces animation and
-//! arms the single scheduler timer. Also manages the auxiliary Settings &
-//! Quick-Add Activity window.
+//! arms the single scheduler timer. Also manages the unified Activity &
+//! Settings Hub window.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -20,7 +20,8 @@ use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Direct2D::ID2D1BitmapBrush1;
 use windows::Win32::Graphics::Gdi::{
-    CreateRectRgn, GetMonitorInfoW, MonitorFromPoint, ScreenToClient, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint,
+    ScreenToClient, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
 };
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -47,8 +48,8 @@ const T_COLLAPSE: usize = 3;
 const T_STATS: usize = 4;
 const T_AUDIO: usize = 5;
 
-const HOVER_INTENT_MS: u32 = 110;
-const COLLAPSE_DELAY_MS: u32 = 360;
+const HOVER_INTENT_MS: u32 = 95;
+const COLLAPSE_DELAY_MS: u32 = 340;
 const AUDIO_FRAME_MS: u32 = 30;
 const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
@@ -108,7 +109,7 @@ pub struct App {
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
     scale: f32,
-    region: (i32, i32, i32, i32),
+    region: (i32, i32, i32, i32, i32, i32),
     needs_draw: bool,
     last_frame: Instant,
     armed: Option<i64>,
@@ -117,7 +118,7 @@ pub struct App {
     taskbar_created: u32,
     pinned: bool,
 
-    // Auxiliary Modal / Settings window state
+    // Unified Activity & Settings Hub state
     modal_kind: Option<ModalKind>,
     modal_page: SettingsPage,
     modal_hits: Vec<ModalHit>,
@@ -138,7 +139,7 @@ pub struct Init {
     pub stats: bool,
     /// Debug aid: start expanded on this tab and stay open (`--expand=focus`).
     pub pin_tab: Option<Tab>,
-    /// Start with Settings or Add-Activity window open (`--settings` / `--add`).
+    /// Start with the Control Hub window open (`--settings`).
     pub initial_modal: Option<ModalKind>,
 }
 
@@ -156,7 +157,7 @@ impl App {
         network::spawn(sink.clone());
 
         let tab = state.settings.tab;
-        let init_pos = priority_index(&state, tab);
+        let init_pos = visible_index(&state, tab);
         let mut app = Self {
             hwnd,
             modal_hwnd,
@@ -192,7 +193,7 @@ impl App {
             hidden: false,
             art: None,
             scale: 1.0,
-            region: (0, 0, 0, 0),
+            region: (0, 0, 0, 0, 0, 0),
             needs_draw: true,
             last_frame: Instant::now(),
             armed: None,
@@ -220,9 +221,10 @@ impl App {
             unsafe { SetTimer(Some(hwnd), T_STATS, 60_000, None) };
         }
         if let Some(tab) = init.pin_tab {
+            app.state.settings.set_pinned(tab, true);
             app.expanded = true;
             app.tab = tab;
-            app.tab_pos.value = priority_index(&app.state, tab);
+            app.tab_pos.value = visible_index(&app.state, tab);
         }
         if let Some(kind) = init.initial_modal {
             app.open_modal(kind);
@@ -252,39 +254,45 @@ impl App {
                 None => self.gfx = Some(Gfx::new(self.hwnd, wpx as u32, hpx as u32, self.scale)?),
             }
         }
-        self.region = (0, 0, 0, 0);
+        self.region = (0, 0, 0, 0, 0, 0);
         self.needs_draw = true;
         Ok(())
     }
 
+    /// Updates the exact hit-test window region (`SetWindowRgn`) matching the solid
+    /// notch body + top concave ear strip, preventing mouse hover pass-through to
+    /// background windows while inside the notch and allowing normal clicks outside.
     fn update_region(&mut self) {
         let p = ui::pill_rect(self.w.value, self.h.value);
         let ear = ui::ear_for(self.e.value, self.mode);
         let s = self.scale;
-        let r = (
-            ((p.x - ear).max(0.0) * s).floor() as i32,
-            0,
-            ((p.right() + ear).min(ui::WIN_W) * s).ceil() as i32,
-            (p.bottom() * s).ceil() as i32,
-        );
-        if r != self.region {
-            self.region = r;
+
+        let pill_l = (p.x.max(0.0) * s).floor() as i32;
+        let pill_r = (p.right().min(ui::WIN_W) * s).ceil() as i32;
+        let pill_b = (p.bottom() * s).ceil() as i32;
+        let ear_l = ((p.x - ear).max(0.0) * s).floor() as i32;
+        let ear_r = ((p.right() + ear).min(ui::WIN_W) * s).ceil() as i32;
+        let ear_b = ((ear + 2.0).min(p.bottom()) * s).ceil() as i32;
+
+        let key = (pill_l, pill_r, pill_b, ear_l, ear_r, ear_b);
+        if key != self.region {
+            self.region = key;
             unsafe {
-                let rgn = CreateRectRgn(r.0, r.1, r.2, r.3);
-                // The system owns the region after this call.
-                SetWindowRgn(self.hwnd, Some(rgn), false);
+                let body_rgn = CreateRectRgn(pill_l, 0, pill_r, pill_b);
+                let ear_rgn = CreateRectRgn(ear_l, 0, ear_r, ear_b);
+                let _ = CombineRgn(Some(body_rgn), Some(body_rgn), Some(ear_rgn), RGN_OR);
+                let _ = DeleteObject(ear_rgn.into());
+                // The system owns `body_rgn` after SetWindowRgn.
+                SetWindowRgn(self.hwnd, Some(body_rgn), false);
             }
         }
     }
 
-    // ---- auxiliary modal / settings window ---------------------------------------
+    // ---- auxiliary Hub / Settings window -----------------------------------------
 
     pub fn open_modal(&mut self, kind: ModalKind) {
         let same_kind = self.modal_kind == Some(kind);
         self.modal_kind = Some(kind);
-        if kind != ModalKind::AddActivity {
-            self.modal_todo_input = None;
-        }
         let (dip_w, dip_h) = modals::window_size(kind);
         let wpx = (dip_w * self.scale).ceil() as i32;
         let hpx = (dip_h * self.scale).ceil() as i32;
@@ -295,12 +303,14 @@ impl App {
             let _ = GetMonitorInfoW(mon, &mut mi);
             let r = mi.rcMonitor;
             let x = r.left + (r.right - r.left - wpx) / 2;
-            let y = match kind {
-                ModalKind::AddActivity => r.top + ((ui::WIN_H + 10.0) * self.scale) as i32,
-                ModalKind::Settings => r.top + ((r.bottom - r.top - hpx) / 2).max(((ui::WIN_H + 16.0) * self.scale) as i32),
-            };
+            let y = r.top + ((r.bottom - r.top - hpx) / 2).max(((ui::WIN_H + 16.0) * self.scale) as i32);
             let flags = if same_kind { SWP_NOMOVE } else { SWP_SHOWWINDOW };
             let _ = SetWindowPos(self.modal_hwnd, Some(HWND_TOPMOST), x, y, wpx, hpx, flags);
+
+            let rad_px = (20.0 * self.scale).round() as i32 * 2;
+            let rgn = CreateRoundRectRgn(0, 0, wpx + 1, hpx + 1, rad_px, rad_px);
+            SetWindowRgn(self.modal_hwnd, Some(rgn), false);
+
             match self.modal_gfx.as_mut() {
                 Some(g) => {
                     let _ = g.resize(wpx as u32, hpx as u32, self.scale);
@@ -338,19 +348,21 @@ impl App {
     fn after_change(&mut self) {
         let now = sys::now_ms();
         self.mode = self.state.collapsed(now);
-        let (mut tw, mut th) = if self.expanded {
+
+        let visible = self.state.hover_activities();
+        if !visible.is_empty() && !visible.contains(&self.tab) {
+            self.tab = visible[0];
+        }
+
+        let (tw, th) = if self.expanded {
             ui::EXPANDED
         } else {
             ui::collapsed_size(&self.state, self.mode)
         };
-        if !self.expanded && self.mouse_inside {
-            tw += 8.0;
-            th += 2.0;
-        }
         self.w.set_target(tw);
         self.h.set_target(th);
         self.e.set_target(if self.expanded { 1.0 } else { 0.0 });
-        self.tab_pos.set_target(priority_index(&self.state, self.tab));
+        self.tab_pos.set_target(visible_index(&self.state, self.tab));
         if self.state.settings.reduce_motion {
             self.w.snap();
             self.h.snap();
@@ -405,8 +417,6 @@ impl App {
             let t = (now % 60_000) as f32 * 0.001;
             match mcfg.style {
                 WaveStyle::AudioReactive => {
-                    // Combine real hardware stereo/master peaks with 5 harmonic band modulators.
-                    // If audio endpoint is momentarily quiet while SMTC is playing, keep a subtle floor wave.
                     let floor = if peak < 0.04 { 0.32 } else { 0.14 };
                     let e_l = left.max(peak * 0.85);
                     let e_r = right.max(peak * 0.85);
@@ -420,7 +430,6 @@ impl App {
                     ]
                 }
                 WaveStyle::SmoothWave => {
-                    // Flowing sinusoidal wave whose height scales smoothly with system sound energy.
                     let amp = (0.38 + 0.62 * peak).clamp(0.35, 1.0);
                     let mut out = [0.22; 5];
                     for (i, b) in out.iter_mut().enumerate() {
@@ -431,7 +440,6 @@ impl App {
                     out
                 }
                 WaveStyle::BouncePulse => {
-                    // Symmetric center-out bass pulse driven by peak & stereo punch.
                     let punch = peak.max(0.28 * (t * 7.5).sin().abs());
                     let side = ((left + right) * 0.5).max(punch * 0.7);
                     [
@@ -489,19 +497,21 @@ impl App {
         }
         let now = sys::now_ms();
         self.expanded = true;
-        // Show the primary running activity when hovering, or highest-priority configured activity.
-        self.tab = match self.mode {
-            Collapsed::Timer => Tab::Focus,
-            Collapsed::Media => Tab::Music,
-            Collapsed::Todo => Tab::Todo,
-            _ => self
-                .state
-                .primary_activity(now)
-                .unwrap_or_else(|| self.state.settings.priority.normalized_order()[0]),
-        };
-        let idx = priority_index(&self.state, self.tab);
-        self.tab_pos.value = idx;
-        self.tab_pos.set_target(idx);
+        let visible = self.state.hover_activities();
+        if !visible.is_empty() {
+            let preferred = match self.mode {
+                Collapsed::Timer => Some(Tab::Focus),
+                Collapsed::Media => Some(Tab::Music),
+                Collapsed::Todo => Some(Tab::Todo),
+                _ => self.state.primary_activity(now),
+            };
+            self.tab = preferred
+                .filter(|t| visible.contains(t))
+                .unwrap_or(visible[0]);
+            let idx = visible_index(&self.state, self.tab);
+            self.tab_pos.value = idx;
+            self.tab_pos.set_target(idx);
+        }
         self.state.dismiss_banner();
         self.after_change();
     }
@@ -537,6 +547,10 @@ impl App {
     }
 
     fn select_tab(&mut self, tab: Tab) {
+        let visible = self.state.hover_activities();
+        if !visible.contains(&tab) {
+            return;
+        }
         if self.tab != tab {
             self.tab = tab;
             self.state.settings.tab = tab;
@@ -549,11 +563,14 @@ impl App {
     }
 
     fn slide_activity(&mut self, delta: isize) {
-        let order = self.state.settings.priority.normalized_order();
-        let cur = order.iter().position(|&t| t == self.tab).unwrap_or(0) as isize;
-        let len = order.len() as isize;
+        let visible = self.state.hover_activities();
+        if visible.len() <= 1 {
+            return;
+        }
+        let cur = visible.iter().position(|&t| t == self.tab).unwrap_or(0) as isize;
+        let len = visible.len() as isize;
         let next = ((cur + delta).rem_euclid(len)) as usize;
-        self.select_tab(order[next]);
+        self.select_tab(visible[next]);
     }
 
     // ---- text input ----------------------------------------------------------------
@@ -596,7 +613,7 @@ impl App {
                 let now = sys::now_ms();
                 if let Some((text, due)) = parse_input(input, now, self.state.offset_min) {
                     self.state.data.todos.add(text, due);
-                    self.state.settings.todo_active = true;
+                    self.state.settings.pin_todo = true;
                     self.state.mark_data_dirty(now);
                     self.state.mark_settings_dirty(now);
                     input.clear();
@@ -639,13 +656,9 @@ impl App {
             Action::Tab(t) => self.select_tab(t),
             Action::SlidePrev => self.slide_activity(-1),
             Action::SlideNext => self.slide_activity(1),
-            Action::OpenAddModal => self.open_modal(ModalKind::AddActivity),
             Action::OpenSettings => self.open_modal(ModalKind::Settings),
             Action::MediaPrev => self.media.send(MediaCmd::Previous),
-            Action::MediaToggle => {
-                self.state.settings.media_active = true;
-                self.media.send(MediaCmd::TogglePlayPause);
-            }
+            Action::MediaToggle => self.media.send(MediaCmd::TogglePlayPause),
             Action::MediaNext => self.media.send(MediaCmd::Next),
             Action::TimerToggle => {
                 self.state.pomodoro.toggle(now);
@@ -685,47 +698,50 @@ impl App {
                 SendMessageW(self.modal_hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
                 return;
             },
-            ModalAction::SwitchToSettings => {
-                self.open_modal(ModalKind::Settings);
-                return;
-            }
-            ModalAction::SwitchToAdd => {
-                self.open_modal(ModalKind::AddActivity);
-                return;
-            }
             ModalAction::SelectPage(page) => {
                 self.modal_page = page;
                 self.modal_needs_draw = true;
                 return;
             }
-            ModalAction::QuickFocus(mins) => {
+            ModalAction::TogglePin(tab) => {
+                self.state.settings.toggle_pinned(tab);
+                if self.state.settings.is_pinned(tab) {
+                    self.tab = tab;
+                    self.state.settings.tab = tab;
+                }
+                self.state.mark_settings_dirty(now);
+            }
+            ModalAction::PriorityUp(tab) => {
+                self.state.settings.priority.move_up(tab);
+                self.state.mark_settings_dirty(now);
+            }
+            ModalAction::PriorityDown(tab) => {
+                self.state.settings.priority.move_down(tab);
+                self.state.mark_settings_dirty(now);
+            }
+            ModalAction::ToggleSmartPeek => {
+                self.state.settings.priority.smart_minute_peek = !self.state.settings.priority.smart_minute_peek;
+                self.state.mark_settings_dirty(now);
+            }
+            ModalAction::QuickFocusPreset(mins) => {
                 self.state.settings.durations.focus_min = mins;
                 self.state.pomodoro.durations.focus_min = mins;
                 self.state.pomodoro.reset();
-                self.state.pomodoro.start(now);
-                self.state.note_focus_started(now);
-                self.tab = Tab::Focus;
-                self.state.settings.tab = Tab::Focus;
                 self.state.mark_settings_dirty(now);
-                self.close_modal();
             }
-            ModalAction::QuickMedia => {
-                self.state.settings.media_active = true;
-                self.tab = Tab::Music;
-                self.state.settings.tab = Tab::Music;
-                if self.state.media.as_ref().is_some_and(|m| !m.playing) {
-                    self.media.send(MediaCmd::TogglePlayPause);
+            ModalAction::FocusToggle => {
+                self.state.pomodoro.toggle(now);
+                if self.state.pomodoro.is_running() {
+                    self.state.note_focus_started(now);
+                    self.tab = Tab::Focus;
                 }
-                self.state.mark_settings_dirty(now);
-                self.close_modal();
             }
-            ModalAction::QuickTodoTogglePin | ModalAction::TogglePinTodo => {
-                self.state.settings.todo_active = !self.state.settings.todo_active;
-                if self.state.settings.todo_active {
-                    self.tab = Tab::Todo;
-                }
-                self.state.mark_settings_dirty(now);
+            ModalAction::FocusReset => {
+                self.state.pomodoro.reset();
             }
+            ModalAction::MediaPrev => self.media.send(MediaCmd::Previous),
+            ModalAction::MediaToggle => self.media.send(MediaCmd::TogglePlayPause),
+            ModalAction::MediaNext => self.media.send(MediaCmd::Next),
             ModalAction::FocusTodoInput => {
                 if self.modal_todo_input.is_none() {
                     self.modal_todo_input = Some(String::new());
@@ -739,13 +755,21 @@ impl App {
                 if let Some(input) = self.modal_todo_input.as_mut() {
                     if let Some((text, due)) = parse_input(input, now, self.state.offset_min) {
                         self.state.data.todos.add(text, due);
-                        self.state.settings.todo_active = true;
+                        self.state.settings.pin_todo = true;
                         self.tab = Tab::Todo;
                         self.state.mark_data_dirty(now);
                         self.state.mark_settings_dirty(now);
                         input.clear();
                     }
                 }
+            }
+            ModalAction::TodoToggle(id) => {
+                self.state.data.todos.toggle(id);
+                self.state.mark_data_dirty(now);
+            }
+            ModalAction::TodoDelete(id) => {
+                self.state.data.todos.remove(id);
+                self.state.mark_data_dirty(now);
             }
             ModalAction::SetLang(lang) => {
                 self.state.settings.lang = Some(lang);
@@ -761,16 +785,8 @@ impl App {
                     log::error!("autostart: {e}");
                 }
             }
-            ModalAction::ToggleSmartPeek => {
-                self.state.settings.priority.smart_minute_peek = !self.state.settings.priority.smart_minute_peek;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::PriorityUp(tab) => {
-                self.state.settings.priority.move_up(tab);
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::PriorityDown(tab) => {
-                self.state.settings.priority.move_down(tab);
+            ModalAction::ToggleReduceMotion => {
+                self.state.settings.reduce_motion = !self.state.settings.reduce_motion;
                 self.state.mark_settings_dirty(now);
             }
             ModalAction::ToggleMinimalHide => {
@@ -797,10 +813,6 @@ impl App {
                 self.state.settings.collapsed_ui.focus_show_icon = !self.state.settings.collapsed_ui.focus_show_icon;
                 self.state.mark_settings_dirty(now);
             }
-            ModalAction::ToggleFocusLabel => {
-                self.state.settings.collapsed_ui.focus_show_label = !self.state.settings.collapsed_ui.focus_show_label;
-                self.state.mark_settings_dirty(now);
-            }
             ModalAction::ToggleFocusTime => {
                 self.state.settings.collapsed_ui.focus_show_time = !self.state.settings.collapsed_ui.focus_show_time;
                 self.state.mark_settings_dirty(now);
@@ -809,20 +821,12 @@ impl App {
                 self.state.settings.collapsed_ui.media_show_art = !self.state.settings.collapsed_ui.media_show_art;
                 self.state.mark_settings_dirty(now);
             }
-            ModalAction::ToggleMediaTitle => {
-                self.state.settings.collapsed_ui.media_show_title = !self.state.settings.collapsed_ui.media_show_title;
-                self.state.mark_settings_dirty(now);
-            }
             ModalAction::ToggleMediaEq => {
                 self.state.settings.collapsed_ui.media_show_eq = !self.state.settings.collapsed_ui.media_show_eq;
                 self.state.mark_settings_dirty(now);
             }
             ModalAction::ToggleTodoIcon => {
                 self.state.settings.collapsed_ui.todo_show_icon = !self.state.settings.collapsed_ui.todo_show_icon;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleTodoText => {
-                self.state.settings.collapsed_ui.todo_show_text = !self.state.settings.collapsed_ui.todo_show_text;
                 self.state.mark_settings_dirty(now);
             }
             ModalAction::ToggleTodoCount => {
@@ -851,10 +855,6 @@ impl App {
             }
             ModalAction::ToggleHoverSlide => {
                 self.state.settings.hover_ui.show_slide_controls = !self.state.settings.hover_ui.show_slide_controls;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverAddBtn => {
-                self.state.settings.hover_ui.show_add_button = !self.state.settings.hover_ui.show_add_button;
                 self.state.mark_settings_dirty(now);
             }
             ModalAction::SetWaveStyle(style) => {
@@ -915,7 +915,6 @@ impl App {
     fn tray_menu(&mut self) {
         let lang = self.state.lang();
         let items = [
-            Some(MenuItem { cmd: MenuCmd::AddActivity, label: t(lang, Key::AddActivity), checked: None }),
             Some(MenuItem { cmd: MenuCmd::Settings, label: t(lang, Key::OpenSettings), checked: None }),
             None,
             Some(MenuItem { cmd: MenuCmd::Autostart, label: t(lang, Key::StartWithWindows), checked: Some(autostart::is_enabled()) }),
@@ -927,7 +926,6 @@ impl App {
         ];
         let now = sys::now_ms();
         match self.tray.menu(&items) {
-            Some(MenuCmd::AddActivity) => self.open_modal(ModalKind::AddActivity),
             Some(MenuCmd::Settings) => self.open_modal(ModalKind::Settings),
             Some(MenuCmd::Autostart) => {
                 if let Err(e) = autostart::set_enabled(!autostart::is_enabled()) {
@@ -951,7 +949,7 @@ impl App {
                 self.state.banner = Some(Banner {
                     icon: BannerIcon::Focus,
                     title: format!("Ailan {}", env!("CARGO_PKG_VERSION")),
-                    body: "A living notch for Windows · native Rust".into(),
+                    body: "A living monochrome notch for Windows · native Rust".into(),
                     until: now + 5_000,
                 });
             }
@@ -1087,7 +1085,6 @@ impl App {
         let view = ModalView {
             kind,
             page: self.modal_page,
-            cursor: self.modal_cursor,
             hover: self.modal_hover,
             todo_input: self.modal_todo_input.as_deref(),
         };
@@ -1153,6 +1150,9 @@ impl App {
     pub fn handle_modal(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let hwnd = self.modal_hwnd;
         match msg {
+            WM_NCHITTEST => {
+                return Some(LRESULT(HTCLIENT as isize));
+            }
             WM_SETCURSOR => {
                 let hit_test = (lparam.0 & 0xFFFF) as u32;
                 if hit_test == HTCLIENT {
@@ -1171,7 +1171,6 @@ impl App {
                 let pos = self.mouse_pos(lparam);
                 if self.modal_cursor != Some(pos) {
                     self.modal_cursor = Some(pos);
-                    self.modal_needs_draw = true;
                 }
                 if !self.modal_mouse_inside {
                     self.modal_mouse_inside = true;
@@ -1255,6 +1254,11 @@ impl App {
     pub fn handle(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let hwnd = self.hwnd;
         match msg {
+            WM_NCHITTEST => {
+                // Explicitly claim client hit-test so hover & mouse events never leak through
+                // to windows underneath the notch.
+                return Some(LRESULT(HTCLIENT as isize));
+            }
             WM_APP_EVENT => {
                 let now = sys::now_ms();
                 let mut changed = false;
@@ -1336,7 +1340,9 @@ impl App {
                 let pos = self.mouse_pos(lparam);
                 if self.cursor != Some(pos) {
                     self.cursor = Some(pos);
-                    self.needs_draw = true;
+                    if !self.expanded && self.mode == Collapsed::Minimal {
+                        self.needs_draw = true;
+                    }
                 }
                 if !self.mouse_inside {
                     self.mouse_inside = true;
@@ -1450,10 +1456,8 @@ impl App {
     }
 }
 
-fn priority_index(st: &AppState, tab: Tab) -> f32 {
-    st.settings
-        .priority
-        .normalized_order()
+fn visible_index(st: &AppState, tab: Tab) -> f32 {
+    st.hover_activities()
         .iter()
         .position(|&t| t == tab)
         .unwrap_or(0) as f32

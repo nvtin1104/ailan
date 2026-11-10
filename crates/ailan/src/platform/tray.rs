@@ -25,8 +25,7 @@ pub struct Tray {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCmd {
-    AddActivity = 1,
-    Settings,
+    Settings = 1,
     Autostart,
     Minimal,
     Language,
@@ -110,7 +109,6 @@ impl Tray {
             let id = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, None, self.hwnd, None);
             let _ = DestroyMenu(menu);
             [
-                MenuCmd::AddActivity,
                 MenuCmd::Settings,
                 MenuCmd::Autostart,
                 MenuCmd::Minimal,
@@ -136,17 +134,15 @@ impl Drop for Tray {
     }
 }
 
-/// Draw the Ailan mark (a mint disc with a black notch pill) into an HICON.
+/// Draw the Ailan mark (a monochrome white disc with a black notch pill) into an HICON.
 fn make_icon(size: i32) -> windows::core::Result<HICON> {
     let s = size as f32;
     let mut px = vec![0u8; (size * size * 4) as usize];
     for y in 0..size {
         for x in 0..size {
             let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            // Disc coverage.
             let d = ((fx - s / 2.0).powi(2) + (fy - s / 2.0).powi(2)).sqrt();
             let disc = (s / 2.0 - d + 0.5).clamp(0.0, 1.0);
-            // Pill: rounded rect centred horizontally in the upper third.
             let (pw, ph) = (s * 0.56, s * 0.22);
             let (cx, cy) = (s / 2.0, s * 0.36);
             let r = ph / 2.0;
@@ -154,14 +150,13 @@ fn make_icon(size: i32) -> windows::core::Result<HICON> {
             let qy = (fy - cy).abs();
             let pd = (qx * qx + qy * qy).sqrt() - r;
             let pill = (0.5 - pd).clamp(0.0, 1.0);
-            // mint #6EE7B7 blended toward black by pill coverage; alpha = disc.
-            let (mr, mg, mb) = (0x6E as f32, 0xE7 as f32, 0xB7 as f32);
             let k = 1.0 - pill;
             let a = disc;
+            let v = (245.0 * k * a) as u8;
             let i = ((y * size + x) * 4) as usize;
-            px[i] = (mb * k * a) as u8;
-            px[i + 1] = (mg * k * a) as u8;
-            px[i + 2] = (mr * k * a) as u8;
+            px[i] = v;
+            px[i + 1] = v;
+            px[i + 2] = v;
             px[i + 3] = (a * 255.0) as u8;
         }
     }

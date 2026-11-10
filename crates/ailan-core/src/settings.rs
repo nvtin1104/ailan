@@ -61,15 +61,18 @@ pub enum WaveStyle {
     BouncePulse,
 }
 
-/// Color preset for the sound wave bars.
+/// Monochrome shade preset for the sound wave bars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveColor {
     #[default]
     White,
-    Mint,
-    Cyan,
-    Violet,
+    #[serde(alias = "mint")]
+    Silver,
+    #[serde(alias = "cyan")]
+    SoftGray,
+    #[serde(alias = "violet")]
+    DimGray,
 }
 
 /// Customizable audio-reactive animation settings for Music playback.
@@ -231,7 +234,6 @@ pub struct HoverUiConfig {
     pub show_battery: bool,
     pub show_headphones: bool,
     pub show_slide_controls: bool,
-    pub show_add_button: bool,
 }
 
 impl Default for HoverUiConfig {
@@ -243,7 +245,6 @@ impl Default for HoverUiConfig {
             show_battery: true,
             show_headphones: true,
             show_slide_controls: true,
-            show_add_button: true,
         }
     }
 }
@@ -271,10 +272,14 @@ pub struct Settings {
     pub hover_ui: HoverUiConfig,
     /// Audio-reactive music animation settings.
     pub music_anim: MusicAnimConfig,
-    /// Whether pending To-do tasks count as a running activity on the dynamic notch.
-    pub todo_active: bool,
-    /// Whether the media player activity was explicitly activated/pinned by the user.
-    pub media_active: bool,
+    /// Whether Focus activity is pinned to always appear on Hover UI.
+    pub pin_focus: bool,
+    /// Whether Music activity is pinned to always appear on Hover UI even when idle.
+    #[serde(alias = "media_active")]
+    pub pin_music: bool,
+    /// Whether To-do activity is pinned to appear on Hover UI & dynamic notch.
+    #[serde(alias = "todo_active")]
+    pub pin_todo: bool,
 }
 
 impl Default for Settings {
@@ -291,8 +296,9 @@ impl Default for Settings {
             collapsed_ui: CollapsedUiConfig::default(),
             hover_ui: HoverUiConfig::default(),
             music_anim: MusicAnimConfig::default(),
-            todo_active: false,
-            media_active: false,
+            pin_focus: false,
+            pin_music: false,
+            pin_todo: false,
         }
     }
 }
@@ -301,13 +307,34 @@ impl Settings {
     pub fn lang(&self) -> Lang {
         self.lang.unwrap_or_default()
     }
+
+    pub fn is_pinned(&self, tab: Tab) -> bool {
+        match tab {
+            Tab::Focus => self.pin_focus,
+            Tab::Music => self.pin_music,
+            Tab::Todo => self.pin_todo,
+        }
+    }
+
+    pub fn set_pinned(&mut self, tab: Tab, pinned: bool) {
+        match tab {
+            Tab::Focus => self.pin_focus = pinned,
+            Tab::Music => self.pin_music = pinned,
+            Tab::Todo => self.pin_todo = pinned,
+        }
+    }
+
+    pub fn toggle_pinned(&mut self, tab: Tab) {
+        let p = !self.is_pinned(tab);
+        self.set_pinned(tab, p);
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Data {
     pub todos: Todos,
-    /// Local day number `focus_today` refers to.
+    /// Local day number `focus_day` refers to.
     pub focus_day: i64,
     pub focus_today: u32,
 }

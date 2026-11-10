@@ -124,16 +124,38 @@ impl AppState {
         self.banner = Some(Banner { icon, title: title.into(), body: body.into(), until });
     }
 
-    /// Check whether a specific activity is currently running/active.
+    /// Check whether a specific activity is currently running/active on the collapsed notch.
     pub fn is_activity_running(&self, tab: Tab) -> bool {
         match tab {
             Tab::Focus => self.pomodoro.is_running(),
-            Tab::Music => {
-                self.media.as_ref().is_some_and(|m| m.playing)
-                    || (self.settings.media_active && self.media.is_some())
-            }
-            Tab::Todo => self.settings.todo_active && self.data.todos.pending_count() > 0,
+            // Music triggers automatically when playing
+            Tab::Music => self.media.as_ref().is_some_and(|m| m.playing),
+            Tab::Todo => self.settings.pin_todo && self.data.todos.pending_count() > 0,
         }
+    }
+
+    /// Whether an activity should appear as a page in the Hover (Expanded) UI:
+    /// - Music triggers automatically whenever there is an active media session or if pinned.
+    /// - Other activities (Focus, Todo) only show if they are pinned or actively running.
+    pub fn is_activity_visible_on_hover(&self, tab: Tab) -> bool {
+        match tab {
+            Tab::Music => {
+                self.media.as_ref().is_some_and(|m| m.playing || !m.title.is_empty())
+                    || self.settings.pin_music
+            }
+            Tab::Focus => self.pomodoro.is_active() || self.settings.pin_focus,
+            Tab::Todo => self.settings.pin_todo,
+        }
+    }
+
+    /// Activities visible in the Hover UI, ordered by the user's priority configuration.
+    pub fn hover_activities(&self) -> Vec<Tab> {
+        self.settings
+            .priority
+            .normalized_order()
+            .into_iter()
+            .filter(|&t| self.is_activity_visible_on_hover(t))
+            .collect()
     }
 
     /// Running activities ordered by the user's priority configuration.
@@ -191,9 +213,6 @@ impl AppState {
                 let key_changed = self.media.as_ref().map(|x| &x.track_key) != m.as_ref().map(|x| &x.track_key);
                 if key_changed && self.art.as_ref().map(|a| &a.track_key) != m.as_ref().map(|x| &x.track_key) {
                     self.art = None;
-                }
-                if m.is_none() {
-                    self.settings.media_active = false;
                 }
                 let changed = self.media != m;
                 self.media = m;
@@ -405,16 +424,21 @@ mod tests {
     #[test]
     fn dynamic_only_when_active_and_smart_minute_peek() {
         let mut s = state();
-        // No activity running -> Minimal by default in DynamicWhenActive mode
         assert_eq!(s.collapsed(0), Collapsed::Minimal);
+        assert!(s.hover_activities().is_empty());
 
-        // Music starts playing -> Media
+        // Music starts playing -> auto-triggered on collapsed & hover UI
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
         assert_eq!(s.collapsed(0), Collapsed::Media);
+        assert_eq!(s.hover_activities(), vec![Tab::Music]);
 
-        // Focus starts at t=0 -> peeks for 5s (0..5_000), then yields to Media (5_000..60_000),
-        // then peeks again at the next minute update (60_000..65_000)!
+        // Pinning Todo shows Todo on Hover UI alongside Music
+        s.settings.pin_todo = true;
+        assert_eq!(s.hover_activities(), vec![Tab::Music, Tab::Todo]);
+
+        // Focus starts at t=0 -> peeks for 5s (0..5_000), then yields to Media (5_000..60_000)
         s.pomodoro.start(0);
+        assert_eq!(s.hover_activities(), vec![Tab::Focus, Tab::Music, Tab::Todo]);
         assert_eq!(s.collapsed(0), Collapsed::Timer);
         assert_eq!(s.collapsed(4_999), Collapsed::Timer);
         assert_eq!(s.collapsed(5_000), Collapsed::Media);
@@ -423,11 +447,9 @@ mod tests {
         assert_eq!(s.collapsed(64_999), Collapsed::Timer);
         assert_eq!(s.collapsed(65_000), Collapsed::Media);
 
-        // If smart_minute_peek is disabled, Focus stays visible continuously (since Focus > Music)
         s.settings.priority.smart_minute_peek = false;
         assert_eq!(s.collapsed(10_000), Collapsed::Timer);
 
-        // Reordering priority so Music > Focus shows Media
         s.settings.priority.move_up(Tab::Music);
         assert_eq!(s.collapsed(0), Collapsed::Media);
     }

@@ -1,80 +1,80 @@
-//! Separate Direct2D flat dark windows for:
-//! 1. Quick-Add Activity Modal (`ModalKind::AddActivity`)
-//! 2. Full Settings & UI Customization App (`ModalKind::Settings`)
+//! Unified Activity Management & Settings Hub App (`ModalKind::Settings`).
+//! Designed with a pure Monochrome Black & White palette, sidebar navigation,
+//! pill toggle switches (instead of checkboxes), and cursor-only hover feedback.
 
 use ailan_core::i18n::{t, Key, Lang};
 use ailan_core::settings::{NotchMode, Tab, WaveColor, WaveStyle};
+use ailan_core::time::fmt_duration;
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect};
 use crate::platform::autostart;
 use crate::ui::{
-    draw_glass_pill, CursorIcon, AMBER, BG, CORAL, CYAN, G_ADD, G_BOX, G_BOX_CHECKED, G_DELETE, G_DOWN, G_MUSIC, G_PLAY,
-    G_SETTINGS, G_TIMER, G_UP, INDIGO, MINT_HI, SUB, TEXT, TEXT_SOFT, VIOLET, WHITE,
+    CursorIcon, BG, G_ADD, G_CHECKMARK, G_DELETE, G_DOWN, G_HOME, G_MUSIC, G_NEXT, G_PAUSE,
+    G_PIN, G_PLAY, G_PREV, G_RESET, G_SETTINGS, G_TIMER, G_UP, PANEL_BG, SILVER, SUB, SURFACE,
+    TEXT_SOFT, WHITE,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModalKind {
-    AddActivity,
+    #[default]
     Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsPage {
     #[default]
-    ModeAndLang,
-    Priority,
+    ActivitiesAndPriority,
+    GeneralAndMode,
     MinimalAndCollapsed,
-    HoverUi,
+    HoverAndAudio,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalAction {
     Close,
     DragHeader,
-    SwitchToSettings,
-    SwitchToAdd,
     SelectPage(SettingsPage),
-    // Quick-Add actions
-    QuickFocus(u32),
-    QuickMedia,
-    QuickTodoTogglePin,
+    // Activity Management & Priority
+    TogglePin(Tab),
+    PriorityUp(Tab),
+    PriorityDown(Tab),
+    ToggleSmartPeek,
+    QuickFocusPreset(u32),
+    FocusToggle,
+    FocusReset,
+    MediaPrev,
+    MediaToggle,
+    MediaNext,
     FocusTodoInput,
     SubmitTodoInput,
-    // Settings: Mode & Language
+    TodoToggle(u64),
+    TodoDelete(u64),
+    // General & Mode
     SetLang(Lang),
     SetMode(NotchMode),
     ToggleAutostart,
-    TogglePinTodo,
-    // Settings: Priority & Smart Switch
-    ToggleSmartPeek,
-    PriorityUp(Tab),
-    PriorityDown(Tab),
-    // Settings: Minimal UI
+    ToggleReduceMotion,
+    // Minimal UI
     ToggleMinimalHide,
     ToggleMinimalDot,
     ToggleMinimalClock,
     ToggleMinimalDate,
     ToggleMinimalBattery,
-    // Settings: Collapsed UI
+    // Collapsed UI
     ToggleFocusIcon,
-    ToggleFocusLabel,
     ToggleFocusTime,
     ToggleMediaArt,
-    ToggleMediaTitle,
     ToggleMediaEq,
     ToggleTodoIcon,
-    ToggleTodoText,
     ToggleTodoCount,
-    // Settings: Hover UI
+    // Hover UI & Audio Wave
     ToggleHoverClock,
     ToggleHoverDate,
     ToggleHoverBattery,
     ToggleHoverWifi,
     ToggleHoverHeadphones,
     ToggleHoverSlide,
-    ToggleHoverAddBtn,
-    // Settings: Audio-Reactive Music Animation
     SetWaveStyle(WaveStyle),
     SetWaveColor(WaveColor),
     SetWaveSensitivity(u8),
@@ -99,247 +99,173 @@ pub struct ModalHit {
 pub struct ModalView<'a> {
     pub kind: ModalKind,
     pub page: SettingsPage,
-    pub cursor: Option<(f32, f32)>,
     pub hover: Option<ModalAction>,
     pub todo_input: Option<&'a str>,
 }
 
-pub fn window_size(kind: ModalKind) -> (f32, f32) {
-    match kind {
-        ModalKind::AddActivity => (420.0, 340.0),
-        ModalKind::Settings => (540.0, 540.0),
-    }
+pub fn window_size(_kind: ModalKind) -> (f32, f32) {
+    (700.0, 520.0)
 }
 
 pub fn draw_modal(cv: &mut Canvas, st: &AppState, v: &ModalView) -> Vec<ModalHit> {
     let mut hits = Vec::new();
     let (w, h) = window_size(v.kind);
     let r = Rect::new(0.0, 0.0, w, h);
-    let radius = 22.0;
+    let radius = 20.0;
 
-    // Pure pitch-black window background (no Liquid Glass gradients) with a crisp 1px border.
+    // 1. Monochrome outer window shell
     cv.alpha = 1.0;
-    cv.fill_round(r, radius, BG, 1.0);
-    cv.stroke_round(r.inset(0.6, 0.6), radius - 0.6, 1.0, WHITE, 0.14);
+    cv.fill_round(r, radius, PANEL_BG, 1.0);
 
-    match v.kind {
-        ModalKind::AddActivity => draw_add_activity(cv, st, v, r, &mut hits),
-        ModalKind::Settings => draw_settings(cv, st, v, r, &mut hits),
+    // 2. Left Sidebar (width = 204px)
+    let side_w = 204.0;
+    cv.fill_round(Rect::new(0.0, 0.0, side_w + radius, h), radius, BG, 1.0);
+    cv.fill_rect(Rect::new(side_w - radius, 0.0, radius, h), BG, 1.0);
+    cv.fill_rect(Rect::new(side_w, 1.0, 1.0, h - 2.0), WHITE, 0.10);
+
+    // Outer 1px crisp border
+    cv.stroke_round(r.inset(0.5, 0.5), radius - 0.5, 1.0, WHITE, 0.16);
+
+    // 3. Draggable top titlebar region + Close button
+    hits.push(ModalHit { rect: Rect::new(0.0, 0.0, w - 52.0, 52.0), action: ModalAction::DragHeader });
+
+    draw_sidebar(cv, st, v, Rect::new(0.0, 0.0, side_w, h), &mut hits);
+    draw_topbar(cv, st, v, Rect::new(side_w + 1.0, 0.0, w - side_w - 1.0, 56.0), &mut hits);
+
+    // 4. Main Content Area (right side)
+    let body = Rect::new(side_w + 22.0, 64.0, w - side_w - 44.0, h - 80.0);
+    match v.page {
+        SettingsPage::ActivitiesAndPriority => draw_page_activities(cv, st, v, body, &mut hits),
+        SettingsPage::GeneralAndMode => draw_page_general(cv, st, v, body, &mut hits),
+        SettingsPage::MinimalAndCollapsed => draw_page_minimal_collapsed(cv, st, v, body, &mut hits),
+        SettingsPage::HoverAndAudio => draw_page_hover(cv, st, v, body, &mut hits),
     }
 
     hits
 }
 
-fn draw_header(
-    cv: &mut Canvas,
-    v: &ModalView,
-    r: Rect,
-    icon: char,
-    title: &str,
-    subtitle: &str,
-    hits: &mut Vec<ModalHit>,
-) {
-    hits.push(ModalHit { rect: Rect::new(0.0, 0.0, r.w - 52.0, 56.0), action: ModalAction::DragHeader });
-
-    let ic = Rect::new(18.0, 14.0, 34.0, 34.0);
-    draw_glass_pill(cv, v.cursor, ic, 11.0, 0.45, MINT_HI, false);
-    cv.glyph(icon, 15.0, ic, MINT_HI, 1.0);
-
-    cv.text(title, Font::text(15.5, 650, Align::Left), Rect::new(62.0, 12.0, r.w - 120.0, 22.0), WHITE, 1.0);
-    cv.text(subtitle, Font::text(11.5, 400, Align::Left), Rect::new(62.0, 32.0, r.w - 120.0, 18.0), TEXT_SOFT, 0.85);
-
-    let close_r = Rect::new(r.w - 44.0, 15.0, 28.0, 28.0);
-    let h_close = if v.hover == Some(ModalAction::Close) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, close_r, 14.0, 0.2 + 0.7 * h_close, CORAL, false);
-    cv.glyph(G_DELETE, 10.5, close_r, if h_close > 0.5 { CORAL } else { TEXT_SOFT }, 0.95);
-    hits.push(ModalHit { rect: close_r, action: ModalAction::Close });
-}
-
-fn draw_add_activity(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
+fn draw_sidebar(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
     let lang = st.lang();
-    draw_header(
-        cv,
-        v,
-        r,
-        G_ADD,
-        t(lang, Key::AddActivityTitle),
-        t(lang, Key::AddActivitySubtitle),
-        hits,
-    );
 
-    // 1. Focus quick buttons row (25m, 45m, 15m).
-    let y1 = 68.0;
-    let cw = (r.w - 36.0 - 16.0) / 3.0;
-    let focus_presets = [
-        (25u32, t(lang, Key::QuickFocus25), MINT_HI),
-        (45u32, t(lang, Key::QuickFocus45), CYAN),
-        (15u32, t(lang, Key::QuickFocus15), AMBER),
+    // Brand badge at top-left
+    let badge = Rect::new(18.0, 18.0, 32.0, 32.0);
+    cv.fill_round(badge, 9.0, WHITE, 0.96);
+    cv.glyph(G_HOME, 14.5, badge, BG, 1.0);
+
+    cv.text("Ailan", Font::text(16.0, 700, Align::Left), Rect::new(60.0, 16.0, 130.0, 20.0), WHITE, 1.0);
+    let sub_brand = if lang == Lang::Vi { "Quản lý & Cài đặt" } else { "Control Hub" };
+    cv.text(sub_brand, Font::text(11.0, 400, Align::Left), Rect::new(60.0, 34.0, 130.0, 16.0), TEXT_SOFT, 0.85);
+
+    // Navigation items
+    let nav_items = [
+        (SettingsPage::ActivitiesAndPriority, G_PIN, t(lang, Key::NavActivities)),
+        (SettingsPage::GeneralAndMode, G_SETTINGS, t(lang, Key::NavGeneral)),
+        (SettingsPage::MinimalAndCollapsed, G_TIMER, t(lang, Key::NavMinimal)),
+        (SettingsPage::HoverAndAudio, G_MUSIC, t(lang, Key::NavHover)),
     ];
-    for (i, (mins, label, col)) in focus_presets.into_iter().enumerate() {
-        let card = Rect::new(18.0 + i as f32 * (cw + 8.0), y1, cw, 64.0);
-        let act = ModalAction::QuickFocus(mins);
-        let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
-        let active = st.pomodoro.is_running() && st.settings.durations.focus_min == mins;
-        draw_glass_pill(cv, v.cursor, card, 14.0, if active { 0.75 } else { 0.25 + 0.65 * h }, col, false);
-        cv.glyph(G_TIMER, 16.0, Rect::new(card.x + 10.0, card.y + 10.0, 22.0, 22.0), col, 1.0);
-        cv.text(
-            &format!("{mins}{}", t(lang, Key::MinuteShort)),
-            Font::text(14.0, 650, Align::Right),
-            Rect::new(card.right() - 52.0, card.y + 10.0, 42.0, 22.0),
-            WHITE,
-            0.95,
-        );
-        cv.text(label, Font::text(11.5, 500, Align::Left), Rect::new(card.x + 10.0, card.y + 36.0, card.w - 16.0, 20.0), TEXT, 0.92);
-        hits.push(ModalHit { rect: card, action: act });
-    }
 
-    // 2. Quick Music Player activation card.
-    let y2 = 144.0;
-    let media_card = Rect::new(18.0, y2, r.w - 36.0, 52.0);
-    let h_media = if v.hover == Some(ModalAction::QuickMedia) { 1.0 } else { 0.0 };
-    let media_running = st.is_activity_running(Tab::Music);
-    draw_glass_pill(cv, v.cursor, media_card, 14.0, if media_running { 0.65 } else { 0.25 + 0.65 * h_media }, CYAN, false);
-    cv.glyph(G_MUSIC, 16.0, Rect::new(media_card.x + 12.0, media_card.y, 28.0, media_card.h), CYAN, 1.0);
-    let media_title = match &st.media {
-        Some(m) if !m.title.is_empty() => format!("{} — {}", t(lang, Key::QuickMedia), m.title),
-        _ => t(lang, Key::QuickMedia).to_string(),
-    };
-    cv.text(
-        &media_title,
-        Font::text(13.0, 600, Align::Left),
-        Rect::new(media_card.x + 44.0, media_card.y + 7.0, media_card.w - 120.0, 20.0),
-        WHITE,
-        0.98,
-    );
-    cv.text(
-        t(lang, Key::NothingPlayingHint),
-        Font::text(11.0, 400, Align::Left),
-        Rect::new(media_card.x + 44.0, media_card.y + 26.0, media_card.w - 120.0, 18.0),
-        TEXT_SOFT,
-        0.8,
-    );
-    let status_lbl = if media_running { t(lang, Key::ActiveLabel) } else { t(lang, Key::Start) };
-    cv.text(
-        status_lbl,
-        Font::text(11.5, 600, Align::Right),
-        Rect::new(media_card.right() - 78.0, media_card.y, 64.0, media_card.h),
-        if media_running { MINT_HI } else { CYAN },
-        0.95,
-    );
-    hits.push(ModalHit { rect: media_card, action: ModalAction::QuickMedia });
-
-    // 3. Quick To-do input + Pin To-do activity row.
-    let y3 = 208.0;
-    let todo_field = Rect::new(18.0, y3, r.w - 36.0 - 44.0, 42.0);
-    let editing = v.todo_input.is_some();
-    let h_todo = if v.hover == Some(ModalAction::FocusTodoInput) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, todo_field, 12.0, if editing { 0.85 } else { 0.25 + 0.5 * h_todo }, INDIGO, !editing);
-    cv.glyph(G_BOX_CHECKED, 13.0, Rect::new(todo_field.x + 10.0, todo_field.y, 22.0, todo_field.h), INDIGO, 1.0);
-    let txt_r = Rect::new(todo_field.x + 36.0, todo_field.y, todo_field.w - 44.0, todo_field.h);
-    match v.todo_input {
-        Some(s) if !s.is_empty() => cv.text(&format!("{s}▏"), Font::text(12.5, 400, Align::Left), txt_r, WHITE, 1.0),
-        Some(_) => cv.text(t(lang, Key::AddTaskHint), Font::text(11.5, 400, Align::Left), txt_r, SUB, 0.95),
-        None => cv.text(t(lang, Key::AddTask), Font::text(12.5, 400, Align::Left), txt_r, TEXT_SOFT, 0.9),
-    }
-    hits.push(ModalHit { rect: todo_field, action: ModalAction::FocusTodoInput });
-
-    let add_btn = Rect::new(todo_field.right() + 6.0, y3, 38.0, 42.0);
-    let h_sub = if v.hover == Some(ModalAction::SubmitTodoInput) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, add_btn, 12.0, 0.4 + 0.55 * h_sub, MINT_HI, false);
-    cv.glyph(G_PLAY, 12.0, add_btn, WHITE, 1.0);
-    hits.push(ModalHit { rect: add_btn, action: ModalAction::SubmitTodoInput });
-
-    // 4. Bottom row: Pin To-do toggle & Open Full Settings App button.
-    let y4 = 266.0;
-    let pin_r = Rect::new(18.0, y4, (r.w - 44.0) * 0.56, 36.0);
-    let h_pin = if v.hover == Some(ModalAction::QuickTodoTogglePin) { 1.0 } else { 0.0 };
-    let pinned = st.settings.todo_active;
-    draw_glass_pill(cv, v.cursor, pin_r, 12.0, if pinned { 0.65 } else { 0.2 + 0.5 * h_pin }, INDIGO, !pinned);
-    cv.glyph(if pinned { G_BOX_CHECKED } else { G_BOX }, 12.5, Rect::new(pin_r.x + 8.0, pin_r.y, 20.0, pin_r.h), if pinned { MINT_HI } else { TEXT_SOFT }, 1.0);
-    cv.text(
-        &format!("{} ({})", t(lang, Key::QuickTodo), st.data.todos.pending_count()),
-        Font::text(11.5, 500, Align::Left),
-        Rect::new(pin_r.x + 30.0, pin_r.y, pin_r.w - 36.0, pin_r.h),
-        WHITE,
-        0.92,
-    );
-    hits.push(ModalHit { rect: pin_r, action: ModalAction::QuickTodoTogglePin });
-
-    let set_r = Rect::new(pin_r.right() + 8.0, y4, r.w - 18.0 - (pin_r.right() + 8.0), 36.0);
-    let h_set = if v.hover == Some(ModalAction::SwitchToSettings) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, set_r, 12.0, 0.35 + 0.6 * h_set, CYAN, false);
-    cv.glyph(G_SETTINGS, 12.5, Rect::new(set_r.x + 10.0, set_r.y, 20.0, set_r.h), CYAN, 1.0);
-    cv.text(
-        t(lang, Key::OpenSettings),
-        Font::text(12.0, 600, Align::Center),
-        Rect::new(set_r.x + 24.0, set_r.y, set_r.w - 30.0, set_r.h),
-        WHITE,
-        0.96,
-    );
-    hits.push(ModalHit { rect: set_r, action: ModalAction::SwitchToSettings });
-}
-
-fn draw_settings(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
-    let lang = st.lang();
-    draw_header(
-        cv,
-        v,
-        r,
-        G_SETTINGS,
-        t(lang, Key::SettingsTitle),
-        "Ailan · Compact Black Notch",
-        hits,
-    );
-
-    // Quick button to jump to Add Activity modal.
-    let quick_add = Rect::new(r.w - 170.0, 15.0, 120.0, 28.0);
-    let h_qa = if v.hover == Some(ModalAction::SwitchToAdd) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, quick_add, 14.0, 0.3 + 0.6 * h_qa, MINT_HI, false);
-    cv.glyph(G_ADD, 10.5, Rect::new(quick_add.x + 8.0, quick_add.y, 16.0, quick_add.h), MINT_HI, 1.0);
-    cv.text(
-        t(lang, Key::AddActivity),
-        Font::text(11.0, 600, Align::Center),
-        Rect::new(quick_add.x + 22.0, quick_add.y, quick_add.w - 26.0, quick_add.h),
-        WHITE,
-        0.95,
-    );
-    hits.push(ModalHit { rect: quick_add, action: ModalAction::SwitchToAdd });
-
-    // Page navigation bar (4 sections).
-    let pages = [
-        (SettingsPage::ModeAndLang, if lang == Lang::Vi { "Chế độ & Ngôn ngữ" } else { "Mode & Language" }),
-        (SettingsPage::Priority, if lang == Lang::Vi { "Ưu tiên & Chuyển đổi" } else { "Priority & Switch" }),
-        (SettingsPage::MinimalAndCollapsed, if lang == Lang::Vi { "UI Tối giản & Thu nhỏ" } else { "Minimal & Collapsed" }),
-        (SettingsPage::HoverUi, if lang == Lang::Vi { "Hover & Sóng nhạc" } else { "Hover & Music Wave" }),
-    ];
-    let nav_y = 64.0;
-    let pw = (r.w - 36.0 - 18.0) / 4.0;
-    for (i, (pg, label)) in pages.into_iter().enumerate() {
-        let pr = Rect::new(18.0 + i as f32 * (pw + 6.0), nav_y, pw, 30.0);
+    let mut ny = 74.0;
+    for (pg, icon, label) in nav_items {
+        let nr = Rect::new(12.0, ny, r.w - 24.0, 38.0);
         let active = v.page == pg;
         let act = ModalAction::SelectPage(pg);
         let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, pr, 11.0, if active { 0.85 } else { 0.15 + 0.45 * h }, CYAN, !active);
-        cv.text(
-            label,
-            Font::text(11.0, if active { 650 } else { 500 }, Align::Center),
-            pr,
-            if active { WHITE } else { TEXT_SOFT },
-            0.96,
-        );
-        hits.push(ModalHit { rect: pr, action: act });
+
+        if active {
+            cv.fill_round(nr, 10.0, WHITE, 0.95);
+            cv.glyph(icon, 13.0, Rect::new(nr.x + 10.0, nr.y, 22.0, nr.h), BG, 1.0);
+            cv.text(
+                label,
+                Font::text(12.0, 650, Align::Left),
+                Rect::new(nr.x + 36.0, nr.y, nr.w - 42.0, nr.h),
+                BG,
+                1.0,
+            );
+        } else {
+            if h > 0.01 {
+                cv.fill_round(nr, 10.0, WHITE, 0.08 * h);
+            }
+            cv.glyph(icon, 13.0, Rect::new(nr.x + 10.0, nr.y, 22.0, nr.h), TEXT_SOFT, 0.90);
+            cv.text(
+                label,
+                Font::text(12.0, 500, Align::Left),
+                Rect::new(nr.x + 36.0, nr.y, nr.w - 42.0, nr.h),
+                TEXT_SOFT,
+                0.92,
+            );
+        }
+        hits.push(ModalHit { rect: nr, action: act });
+        ny += 44.0;
     }
 
-    let body = Rect::new(18.0, 104.0, r.w - 36.0, r.h - 118.0);
-    match v.page {
-        SettingsPage::ModeAndLang => draw_page_mode(cv, st, v, body, hits),
-        SettingsPage::Priority => draw_page_priority(cv, st, v, body, hits),
-        SettingsPage::MinimalAndCollapsed => draw_page_minimal_collapsed(cv, st, v, body, hits),
-        SettingsPage::HoverUi => draw_page_hover(cv, st, v, body, hits),
+    // Bottom status summary card in sidebar
+    let foot = Rect::new(14.0, r.h - 76.0, r.w - 28.0, 60.0);
+    cv.fill_round(foot, 11.0, SURFACE, 1.0);
+    cv.stroke_round(foot.inset(0.5, 0.5), 10.5, 1.0, WHITE, 0.08);
+
+    let visible_cnt = st.hover_activities().len();
+    let status_hdr = if lang == Lang::Vi { "Hiển thị Hover UI" } else { "Hover UI Active" };
+    let status_val = if lang == Lang::Vi {
+        format!("{visible_cnt}/3 hoạt động mở")
+    } else {
+        format!("{visible_cnt}/3 pages visible")
+    };
+    cv.text(status_hdr, Font::text(10.5, 500, Align::Left), Rect::new(foot.x + 12.0, foot.y + 10.0, foot.w - 24.0, 16.0), SUB, 1.0);
+    cv.text(&status_val, Font::text(12.0, 650, Align::Left), Rect::new(foot.x + 12.0, foot.y + 28.0, foot.w - 24.0, 18.0), WHITE, 0.95);
+}
+
+fn draw_topbar(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
+    let lang = st.lang();
+    let page_title = match v.page {
+        SettingsPage::ActivitiesAndPriority => t(lang, Key::NavActivities),
+        SettingsPage::GeneralAndMode => t(lang, Key::NavGeneral),
+        SettingsPage::MinimalAndCollapsed => t(lang, Key::NavMinimal),
+        SettingsPage::HoverAndAudio => t(lang, Key::NavHover),
+    };
+
+    cv.text(
+        page_title,
+        Font::text(16.0, 700, Align::Left),
+        Rect::new(r.x + 22.0, r.y + 14.0, r.w - 80.0, 28.0),
+        WHITE,
+        1.0,
+    );
+    cv.fill_rect(Rect::new(r.x, r.bottom() - 1.0, r.w, 1.0), WHITE, 0.08);
+
+    // Close button (top-right, monochrome, no hover scaling)
+    let close_r = Rect::new(r.right() - 44.0, 14.0, 28.0, 28.0);
+    let h_close = if v.hover == Some(ModalAction::Close) { 1.0 } else { 0.0 };
+    cv.fill_round(close_r, 8.0, WHITE, 0.08 + 0.12 * h_close);
+    cv.stroke_round(close_r.inset(0.5, 0.5), 7.5, 1.0, WHITE, 0.14 + 0.18 * h_close);
+    cv.glyph(G_DELETE, 10.0, close_r, WHITE, 0.80 + 0.20 * h_close);
+    hits.push(ModalHit { rect: close_r, action: ModalAction::Close });
+}
+
+/// Monochrome pill Toggle Switch (replaces checkboxes across the entire UI).
+pub fn draw_switch(cv: &mut Canvas, r: Rect, checked: bool, hover: f32) {
+    let sw = 36.0;
+    let sh = 20.0;
+    let sx = r.x + (r.w - sw) * 0.5;
+    let sy = r.y + (r.h - sh) * 0.5;
+    let track = Rect::new(sx, sy, sw, sh);
+    let rad = sh * 0.5;
+
+    if checked {
+        cv.fill_round(track, rad, WHITE, 0.96);
+        let knob_cx = track.right() - rad;
+        let knob_cy = track.y + rad;
+        cv.fill_circle(knob_cx, knob_cy, 7.2, BG, 1.0);
+    } else {
+        cv.fill_round(track, rad, WHITE, 0.12 + 0.06 * hover);
+        cv.stroke_round(track.inset(0.5, 0.5), rad - 0.5, 1.0, WHITE, 0.22 + 0.12 * hover);
+        let knob_cx = track.x + rad;
+        let knob_cy = track.y + rad;
+        cv.fill_circle(knob_cx, knob_cy, 6.8, TEXT_SOFT, 0.90);
     }
 }
 
-fn draw_toggle_row(
+/// Draws a flat monochrome row with a label on the left and a Toggle Switch on the right.
+fn draw_switch_row(
     cv: &mut Canvas,
     v: &ModalView,
     r: Rect,
@@ -349,45 +275,315 @@ fn draw_toggle_row(
     hits: &mut Vec<ModalHit>,
 ) {
     let h = if v.hover == Some(action) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, r, 10.0, if checked { 0.35 + 0.3 * h } else { 0.1 + 0.35 * h }, MINT_HI, !checked);
-    cv.glyph(
-        if checked { G_BOX_CHECKED } else { G_BOX },
-        13.0,
-        Rect::new(r.x + 10.0, r.y, 22.0, r.h),
-        if checked { MINT_HI } else { TEXT_SOFT },
-        0.95,
-    );
+    let bg_a = if checked { 0.09 } else { 0.04 } + 0.04 * h;
+    cv.fill_round(r, 10.0, WHITE, bg_a);
+    cv.stroke_round(r.inset(0.5, 0.5), 9.5, 1.0, WHITE, if checked { 0.18 } else { 0.08 } + 0.08 * h);
+
     cv.text(
         label,
-        Font::text(12.0, if checked { 550 } else { 450 }, Align::Left),
-        Rect::new(r.x + 36.0, r.y, r.w - 44.0, r.h),
+        Font::text(12.0, if checked { 600 } else { 450 }, Align::Left),
+        Rect::new(r.x + 12.0, r.y, r.w - 60.0, r.h),
         if checked { WHITE } else { TEXT_SOFT },
-        0.95,
+        0.96,
     );
+
+    let sw_r = Rect::new(r.right() - 48.0, r.y, 40.0, r.h);
+    draw_switch(cv, sw_r, checked, h);
     hits.push(ModalHit { rect: r, action });
 }
 
-fn draw_page_mode(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
+fn draw_section_label(cv: &mut Canvas, x: f32, y: f32, w: f32, text: &str) {
+    cv.text(text, Font::text(11.5, 650, Align::Left), Rect::new(x, y, w, 18.0), TEXT_SOFT, 0.90);
+}
+
+// ---- Page 1: Activities Management & Priority Order -----------------------------
+
+fn draw_page_activities(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
     let lang = st.lang();
     let mut y = r.y;
 
-    // 1. Language selector.
-    cv.text(t(lang, Key::LanguageSection), Font::text(12.5, 650, Align::Left), Rect::new(r.x, y, r.w, 20.0), CYAN, 0.95);
-    y += 24.0;
-    let lw = (r.w - 8.0) * 0.5;
-    for (i, (l, name)) in [(Lang::Vi, "Tiếng Việt"), (Lang::En, "English")].into_iter().enumerate() {
-        let lr = Rect::new(r.x + i as f32 * (lw + 8.0), y, lw, 34.0);
-        let active = lang == l;
-        let act = ModalAction::SetLang(l);
-        let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, lr, 11.0, if active { 0.8 } else { 0.15 + 0.45 * h }, MINT_HI, !active);
-        cv.text(name, Font::text(12.5, if active { 650 } else { 500 }, Align::Center), lr, WHITE, 0.96);
-        hits.push(ModalHit { rect: lr, action: act });
+    // 1. Priority Order & Pin to Hover UI section
+    draw_section_label(cv, r.x, y, r.w, t(lang, Key::PrioritySection));
+    y += 22.0;
+
+    let order = st.settings.priority.normalized_order();
+    for (idx, &tab) in order.iter().enumerate() {
+        let row = Rect::new(r.x, y, r.w, 44.0);
+        let (icon, name) = match tab {
+            Tab::Focus => (G_TIMER, t(lang, Key::TabFocus)),
+            Tab::Music => (G_MUSIC, t(lang, Key::TabMusic)),
+            Tab::Todo => (G_CHECKMARK, t(lang, Key::TabTodo)),
+        };
+        let running = st.is_activity_running(tab);
+        let pinned = st.settings.is_pinned(tab);
+
+        cv.fill_round(row, 11.0, SURFACE, 1.0);
+        cv.stroke_round(row.inset(0.5, 0.5), 10.5, 1.0, WHITE, if running || pinned { 0.22 } else { 0.09 });
+
+        // Rank badge (#1, #2, #3)
+        let badge = Rect::new(row.x + 10.0, row.y + 9.0, 26.0, 26.0);
+        cv.fill_round(badge, 7.0, WHITE, if idx == 0 { 0.92 } else { 0.12 });
+        cv.text(
+            &format!("#{}", idx + 1),
+            Font::text(11.5, 700, Align::Center),
+            badge,
+            if idx == 0 { BG } else { WHITE },
+            1.0,
+        );
+
+        cv.glyph(icon, 13.5, Rect::new(row.x + 42.0, row.y, 22.0, row.h), WHITE, 0.92);
+        cv.text(name, Font::text(12.5, 650, Align::Left), Rect::new(row.x + 68.0, row.y + 5.0, 150.0, 18.0), WHITE, 0.98);
+
+        let sub_status = match tab {
+            Tab::Music if running => t(lang, Key::ActiveLabel),
+            Tab::Music => t(lang, Key::AutoTriggerLabel),
+            _ if running => t(lang, Key::ActiveLabel),
+            _ if pinned => t(lang, Key::PinnedLabel),
+            _ => t(lang, Key::IdleLabel),
+        };
+        cv.text(
+            sub_status,
+            Font::text(10.5, 450, Align::Left),
+            Rect::new(row.x + 68.0, row.y + 22.0, 170.0, 16.0),
+            if running { WHITE } else { SUB },
+            0.90,
+        );
+
+        // Pin Switch ("Pin to Hover UI")
+        let pin_act = ModalAction::TogglePin(tab);
+        let h_pin = if v.hover == Some(pin_act) { 1.0 } else { 0.0 };
+        let pin_lbl = if lang == Lang::Vi { "Ghim Hover" } else { "Pin Hover" };
+        cv.text(
+            pin_lbl,
+            Font::text(11.0, 500, Align::Right),
+            Rect::new(row.right() - 186.0, row.y, 70.0, row.h),
+            if pinned { WHITE } else { TEXT_SOFT },
+            0.90,
+        );
+        let sw_r = Rect::new(row.right() - 110.0, row.y, 40.0, row.h);
+        draw_switch(cv, sw_r, pinned, h_pin);
+        hits.push(ModalHit {
+            rect: Rect::new(row.right() - 186.0, row.y, 116.0, row.h),
+            action: pin_act,
+        });
+
+        // Move Up button
+        let up_r = Rect::new(row.right() - 62.0, row.y + 8.0, 24.0, 28.0);
+        let h_up = if v.hover == Some(ModalAction::PriorityUp(tab)) { 1.0 } else { 0.0 };
+        cv.fill_round(up_r, 7.0, WHITE, if idx == 0 { 0.04 } else { 0.10 + 0.10 * h_up });
+        cv.glyph(G_UP, 10.0, up_r, WHITE, if idx == 0 { 0.25 } else { 0.90 });
+        if idx > 0 {
+            hits.push(ModalHit { rect: up_r, action: ModalAction::PriorityUp(tab) });
+        }
+
+        // Move Down button
+        let dn_r = Rect::new(row.right() - 34.0, row.y + 8.0, 24.0, 28.0);
+        let h_dn = if v.hover == Some(ModalAction::PriorityDown(tab)) { 1.0 } else { 0.0 };
+        cv.fill_round(dn_r, 7.0, WHITE, if idx + 1 == order.len() { 0.04 } else { 0.10 + 0.10 * h_dn });
+        cv.glyph(G_DOWN, 10.0, dn_r, WHITE, if idx + 1 == order.len() { 0.25 } else { 0.90 });
+        if idx + 1 < order.len() {
+            hits.push(ModalHit { rect: dn_r, action: ModalAction::PriorityDown(tab) });
+        }
+
+        y += 50.0;
     }
+
+    // Smart minute peek switch row
+    let smart_r = Rect::new(r.x, y, r.w, 36.0);
+    draw_switch_row(
+        cv,
+        v,
+        smart_r,
+        t(lang, Key::SmartMinutePeek),
+        st.settings.priority.smart_minute_peek,
+        ModalAction::ToggleSmartPeek,
+        hits,
+    );
     y += 46.0;
 
-    // 2. Operating Mode selector.
-    cv.text(t(lang, Key::ModeSection), Font::text(12.5, 650, Align::Left), Rect::new(r.x, y, r.w, 20.0), CYAN, 0.95);
+    // 2. Direct Activity Controls: Left = Pomodoro & Music, Right = To-do Manager
+    let col_w = (r.w - 12.0) * 0.5;
+    let left_x = r.x;
+    let right_x = r.x + col_w + 12.0;
+
+    // ---- Left Card: Pomodoro & Music Quick Control ----
+    let pomo_card = Rect::new(left_x, y, col_w, 114.0);
+    cv.fill_round(pomo_card, 12.0, SURFACE, 1.0);
+    cv.stroke_round(pomo_card.inset(0.5, 0.5), 11.5, 1.0, WHITE, 0.10);
+
+    cv.glyph(G_TIMER, 13.0, Rect::new(pomo_card.x + 12.0, pomo_card.y + 10.0, 20.0, 20.0), WHITE, 0.95);
+    cv.text(
+        "Pomodoro",
+        Font::text(12.5, 650, Align::Left),
+        Rect::new(pomo_card.x + 34.0, pomo_card.y + 10.0, 90.0, 20.0),
+        WHITE,
+        1.0,
+    );
+    let rem_str = fmt_duration(st.pomodoro.remaining(0));
+    cv.text(
+        &rem_str,
+        Font::text(13.0, 700, Align::Right),
+        Rect::new(pomo_card.right() - 80.0, pomo_card.y + 10.0, 68.0, 20.0),
+        WHITE,
+        0.95,
+    );
+
+    // Preset buttons (15m, 25m, 45m)
+    let pw = (pomo_card.w - 24.0 - 12.0) / 3.0;
+    for (i, mins) in [15u32, 25, 45].into_iter().enumerate() {
+        let pr = Rect::new(pomo_card.x + 12.0 + i as f32 * (pw + 6.0), pomo_card.y + 38.0, pw, 28.0);
+        let active = st.settings.durations.focus_min == mins;
+        let act = ModalAction::QuickFocusPreset(mins);
+        let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
+        if active {
+            cv.fill_round(pr, 8.0, WHITE, 0.92);
+            cv.text(&format!("{mins}{}", t(lang, Key::MinuteShort)), Font::text(11.5, 650, Align::Center), pr, BG, 1.0);
+        } else {
+            cv.fill_round(pr, 8.0, WHITE, 0.08 + 0.08 * h);
+            cv.text(&format!("{mins}{}", t(lang, Key::MinuteShort)), Font::text(11.5, 500, Align::Center), pr, WHITE, 0.90);
+        }
+        hits.push(ModalHit { rect: pr, action: act });
+    }
+
+    // Start/Pause & Reset buttons
+    let start_r = Rect::new(pomo_card.x + 12.0, pomo_card.y + 74.0, pomo_card.w - 62.0, 28.0);
+    let h_st = if v.hover == Some(ModalAction::FocusToggle) { 1.0 } else { 0.0 };
+    let running_pomo = st.pomodoro.is_running();
+    if running_pomo {
+        cv.fill_round(start_r, 8.0, WHITE, 0.94);
+        cv.text(t(lang, Key::Pause), Font::text(11.5, 650, Align::Center), start_r, BG, 1.0);
+    } else {
+        cv.fill_round(start_r, 8.0, WHITE, 0.14 + 0.10 * h_st);
+        cv.stroke_round(start_r.inset(0.5, 0.5), 7.5, 1.0, WHITE, 0.22);
+        cv.text(t(lang, Key::Start), Font::text(11.5, 650, Align::Center), start_r, WHITE, 0.98);
+    }
+    hits.push(ModalHit { rect: start_r, action: ModalAction::FocusToggle });
+
+    let rst_r = Rect::new(start_r.right() + 6.0, pomo_card.y + 74.0, 32.0, 28.0);
+    let h_rst = if v.hover == Some(ModalAction::FocusReset) { 1.0 } else { 0.0 };
+    cv.fill_round(rst_r, 8.0, WHITE, 0.08 + 0.10 * h_rst);
+    cv.glyph(G_RESET, 11.0, rst_r, WHITE, 0.90);
+    hits.push(ModalHit { rect: rst_r, action: ModalAction::FocusReset });
+
+    // Music Mini Card below Pomodoro
+    let mus_card = Rect::new(left_x, y + 122.0, col_w, 60.0);
+    cv.fill_round(mus_card, 12.0, SURFACE, 1.0);
+    cv.stroke_round(mus_card.inset(0.5, 0.5), 11.5, 1.0, WHITE, 0.10);
+    cv.glyph(G_MUSIC, 13.0, Rect::new(mus_card.x + 12.0, mus_card.y + 10.0, 20.0, 20.0), WHITE, 0.95);
+    let m_title = st
+        .media
+        .as_ref()
+        .filter(|m| !m.title.is_empty())
+        .map(|m| m.title.as_str())
+        .unwrap_or_else(|| t(lang, Key::NothingPlaying));
+    cv.text(
+        m_title,
+        Font::text(11.5, 600, Align::Left),
+        Rect::new(mus_card.x + 34.0, mus_card.y + 10.0, mus_card.w - 44.0, 18.0),
+        WHITE,
+        0.95,
+    );
+    let m_playing = st.media.as_ref().is_some_and(|m| m.playing);
+    for (i, (g, act)) in [
+        (G_PREV, ModalAction::MediaPrev),
+        (if m_playing { G_PAUSE } else { G_PLAY }, ModalAction::MediaToggle),
+        (G_NEXT, ModalAction::MediaNext),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let br = Rect::new(mus_card.x + 12.0 + i as f32 * 36.0, mus_card.y + 30.0, 30.0, 22.0);
+        let hm = if v.hover == Some(act) { 1.0 } else { 0.0 };
+        cv.fill_round(br, 6.0, WHITE, 0.08 + 0.10 * hm);
+        cv.glyph(g, 10.0, br, WHITE, 0.92);
+        hits.push(ModalHit { rect: br, action: act });
+    }
+
+    // ---- Right Card: To-do Quick Manager ----
+    let todo_card = Rect::new(right_x, y, col_w, 182.0);
+    cv.fill_round(todo_card, 12.0, SURFACE, 1.0);
+    cv.stroke_round(todo_card.inset(0.5, 0.5), 11.5, 1.0, WHITE, 0.10);
+
+    cv.text(
+        t(lang, Key::QuickTodo),
+        Font::text(12.5, 650, Align::Left),
+        Rect::new(todo_card.x + 12.0, todo_card.y + 10.0, todo_card.w - 24.0, 20.0),
+        WHITE,
+        1.0,
+    );
+
+    // Input field + Submit button
+    let inp_r = Rect::new(todo_card.x + 10.0, todo_card.y + 34.0, todo_card.w - 50.0, 30.0);
+    let editing = v.todo_input.is_some();
+    cv.fill_round(inp_r, 8.0, WHITE, if editing { 0.14 } else { 0.07 });
+    cv.stroke_round(inp_r.inset(0.5, 0.5), 7.5, 1.0, WHITE, if editing { 0.65 } else { 0.14 });
+    let txt_r = Rect::new(inp_r.x + 10.0, inp_r.y, inp_r.w - 16.0, inp_r.h);
+    match v.todo_input {
+        Some(s) if !s.is_empty() => cv.text(&format!("{s}▏"), Font::text(11.5, 450, Align::Left), txt_r, WHITE, 1.0),
+        Some(_) => cv.text(t(lang, Key::AddTask), Font::text(11.0, 400, Align::Left), txt_r, SUB, 0.95),
+        None => cv.text(t(lang, Key::AddTask), Font::text(11.0, 400, Align::Left), txt_r, TEXT_SOFT, 0.85),
+    }
+    hits.push(ModalHit { rect: inp_r, action: ModalAction::FocusTodoInput });
+
+    let sub_r = Rect::new(inp_r.right() + 6.0, todo_card.y + 34.0, 24.0, 30.0);
+    let h_sub = if v.hover == Some(ModalAction::SubmitTodoInput) { 1.0 } else { 0.0 };
+    cv.fill_round(sub_r, 8.0, WHITE, 0.88 + 0.12 * h_sub);
+    cv.glyph(G_ADD, 10.5, sub_r, BG, 1.0);
+    hits.push(ModalHit { rect: sub_r, action: ModalAction::SubmitTodoInput });
+
+    // Up to 3 tasks inside the To-do card
+    let items = st.data.todos.sorted();
+    if items.is_empty() {
+        cv.text(
+            t(lang, Key::NoTasks),
+            Font::text(11.0, 400, Align::Center),
+            Rect::new(todo_card.x + 10.0, todo_card.y + 84.0, todo_card.w - 20.0, 60.0),
+            SUB,
+            0.90,
+        );
+    } else {
+        for (i, item) in items.iter().take(3).enumerate() {
+            let tr = Rect::new(todo_card.x + 10.0, todo_card.y + 72.0 + i as f32 * 33.0, todo_card.w - 20.0, 28.0);
+            let ht = if v.hover == Some(ModalAction::TodoToggle(item.id)) { 1.0 } else { 0.0 };
+            cv.fill_round(tr, 7.0, WHITE, if item.done { 0.14 } else { 0.06 } + 0.05 * ht);
+
+            let cx = tr.x + 13.0;
+            let cy = tr.y + tr.h * 0.5;
+            if item.done {
+                cv.fill_circle(cx, cy, 6.5, WHITE, 0.95);
+                cv.glyph(G_CHECKMARK, 7.5, Rect::new(cx - 7.0, cy - 7.0, 14.0, 14.0), BG, 1.0);
+            } else {
+                cv.stroke_circle(cx, cy, 6.2, 1.2, WHITE, 0.55);
+            }
+
+            cv.text(
+                &item.text,
+                Font::text(11.0, 500, Align::Left),
+                Rect::new(tr.x + 25.0, tr.y, tr.w - 46.0, tr.h),
+                WHITE,
+                if item.done { 0.50 } else { 0.95 },
+            );
+
+            let del_r = Rect::new(tr.right() - 20.0, tr.y + 2.0, 18.0, tr.h - 4.0);
+            let hd = if v.hover == Some(ModalAction::TodoDelete(item.id)) { 1.0 } else { 0.0 };
+            cv.glyph(G_DELETE, 8.0, del_r, WHITE, 0.45 + 0.55 * hd);
+            hits.push(ModalHit { rect: del_r, action: ModalAction::TodoDelete(item.id) });
+            hits.push(ModalHit {
+                rect: Rect::new(tr.x, tr.y, tr.w - 20.0, tr.h),
+                action: ModalAction::TodoToggle(item.id),
+            });
+        }
+    }
+}
+
+// ---- Page 2: General & Mode Settings --------------------------------------------
+
+fn draw_page_general(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
+    let lang = st.lang();
+    let mut y = r.y;
+
+    // 1. Operating Mode selector (Switch rows)
+    draw_section_label(cv, r.x, y, r.w, t(lang, Key::ModeSection));
     y += 24.0;
     let modes = [
         (NotchMode::DynamicWhenActive, t(lang, Key::ModeDynamicActive)),
@@ -395,257 +591,179 @@ fn draw_page_mode(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: 
         (NotchMode::MinimalOnly, t(lang, Key::ModeMinimalOnly)),
     ];
     for (m, label) in modes {
-        let mr = Rect::new(r.x, y, r.w, 36.0);
-        let active = st.settings.mode == m && !st.settings.minimal;
-        draw_toggle_row(cv, v, mr, label, active, ModalAction::SetMode(m), hits);
-        y += 42.0;
+        let mr = Rect::new(r.x, y, r.w, 40.0);
+        let active = st.settings.mode == m && (!st.settings.minimal || m == NotchMode::MinimalOnly);
+        draw_switch_row(cv, v, mr, label, active, ModalAction::SetMode(m), hits);
+        y += 46.0;
     }
-    y += 8.0;
+    y += 10.0;
 
-    // 3. System & To-do activity options.
-    draw_toggle_row(
+    // 2. Language & System section
+    draw_section_label(cv, r.x, y, r.w, t(lang, Key::LanguageSection));
+    y += 24.0;
+
+    let lw = (r.w - 10.0) * 0.5;
+    for (i, (l, name)) in [(Lang::Vi, "Tiếng Việt"), (Lang::En, "English")].into_iter().enumerate() {
+        let lr = Rect::new(r.x + i as f32 * (lw + 10.0), y, lw, 36.0);
+        let active = lang == l;
+        let act = ModalAction::SetLang(l);
+        let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
+        if active {
+            cv.fill_round(lr, 10.0, WHITE, 0.95);
+            cv.text(name, Font::text(12.5, 700, Align::Center), lr, BG, 1.0);
+        } else {
+            cv.fill_round(lr, 10.0, WHITE, 0.06 + 0.06 * h);
+            cv.stroke_round(lr.inset(0.5, 0.5), 9.5, 1.0, WHITE, 0.14);
+            cv.text(name, Font::text(12.5, 500, Align::Center), lr, TEXT_SOFT, 0.95);
+        }
+        hits.push(ModalHit { rect: lr, action: act });
+    }
+    y += 48.0;
+
+    draw_switch_row(
         cv,
         v,
-        Rect::new(r.x, y, r.w, 36.0),
-        t(lang, Key::PinTodoActivity),
-        st.settings.todo_active,
-        ModalAction::TogglePinTodo,
-        hits,
-    );
-    y += 42.0;
-    draw_toggle_row(
-        cv,
-        v,
-        Rect::new(r.x, y, r.w, 36.0),
+        Rect::new(r.x, y, r.w, 40.0),
         t(lang, Key::StartWithWindows),
         autostart::is_enabled(),
         ModalAction::ToggleAutostart,
         hits,
     );
+    y += 46.0;
+
+    draw_switch_row(
+        cv,
+        v,
+        Rect::new(r.x, y, r.w, 40.0),
+        t(lang, Key::ReduceMotion),
+        st.settings.reduce_motion,
+        ModalAction::ToggleReduceMotion,
+        hits,
+    );
 }
 
-fn draw_page_priority(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
-    let lang = st.lang();
-    let mut y = r.y;
-
-    cv.text(t(lang, Key::PrioritySection), Font::text(12.5, 650, Align::Left), Rect::new(r.x, y, r.w, 20.0), CYAN, 0.95);
-    y += 24.0;
-
-    // Smart minute peek toggle card.
-    let smart_r = Rect::new(r.x, y, r.w, 54.0);
-    let checked = st.settings.priority.smart_minute_peek;
-    let h_sm = if v.hover == Some(ModalAction::ToggleSmartPeek) { 1.0 } else { 0.0 };
-    draw_glass_pill(cv, v.cursor, smart_r, 12.0, if checked { 0.45 + 0.3 * h_sm } else { 0.15 + 0.3 * h_sm }, MINT_HI, !checked);
-    cv.glyph(
-        if checked { G_BOX_CHECKED } else { G_BOX },
-        14.0,
-        Rect::new(smart_r.x + 12.0, smart_r.y, 24.0, smart_r.h),
-        if checked { MINT_HI } else { TEXT_SOFT },
-        1.0,
-    );
-    cv.text(
-        t(lang, Key::SmartMinutePeek),
-        Font::text(12.5, 600, Align::Left),
-        Rect::new(smart_r.x + 40.0, smart_r.y + 8.0, smart_r.w - 50.0, 20.0),
-        WHITE,
-        0.98,
-    );
-    cv.text(
-        t(lang, Key::SmartMinutePeekDesc),
-        Font::text(11.0, 400, Align::Left),
-        Rect::new(smart_r.x + 40.0, smart_r.y + 28.0, smart_r.w - 50.0, 18.0),
-        TEXT_SOFT,
-        0.85,
-    );
-    hits.push(ModalHit { rect: smart_r, action: ModalAction::ToggleSmartPeek });
-    y += 68.0;
-
-    // Reorderable activity priority list.
-    let order = st.settings.priority.normalized_order();
-    for (idx, &tab) in order.iter().enumerate() {
-        let row = Rect::new(r.x, y, r.w, 46.0);
-        let (icon, name, col) = match tab {
-            Tab::Focus => (G_TIMER, t(lang, Key::TabFocus), MINT_HI),
-            Tab::Music => (G_MUSIC, t(lang, Key::TabMusic), CYAN),
-            Tab::Todo => (G_BOX_CHECKED, t(lang, Key::TabTodo), INDIGO),
-        };
-        let running = st.is_activity_running(tab);
-        draw_glass_pill(cv, v.cursor, row, 12.0, if running { 0.45 } else { 0.2 }, col, false);
-
-        cv.text(
-            &format!("#{}", idx + 1),
-            Font::text(13.0, 650, Align::Center),
-            Rect::new(row.x + 10.0, row.y, 28.0, row.h),
-            col,
-            1.0,
-        );
-        cv.glyph(icon, 14.0, Rect::new(row.x + 42.0, row.y, 24.0, row.h), col, 1.0);
-        cv.text(name, Font::text(13.0, 600, Align::Left), Rect::new(row.x + 72.0, row.y, 180.0, row.h), WHITE, 0.96);
-
-        let status = if running { t(lang, Key::ActiveLabel) } else { t(lang, Key::IdleLabel) };
-        cv.text(
-            status,
-            Font::text(11.5, 500, Align::Right),
-            Rect::new(row.right() - 160.0, row.y, 76.0, row.h),
-            if running { MINT_HI } else { SUB },
-            0.9,
-        );
-
-        // Move Up button
-        let up_r = Rect::new(row.right() - 72.0, row.y + 8.0, 28.0, 30.0);
-        let h_up = if v.hover == Some(ModalAction::PriorityUp(tab)) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, up_r, 8.0, 0.2 + 0.65 * h_up, CYAN, idx == 0);
-        cv.glyph(G_UP, 11.0, up_r, if idx == 0 { SUB } else { WHITE }, if idx == 0 { 0.35 } else { 0.95 });
-        if idx > 0 {
-            hits.push(ModalHit { rect: up_r, action: ModalAction::PriorityUp(tab) });
-        }
-
-        // Move Down button
-        let dn_r = Rect::new(row.right() - 38.0, row.y + 8.0, 28.0, 30.0);
-        let h_dn = if v.hover == Some(ModalAction::PriorityDown(tab)) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, dn_r, 8.0, 0.2 + 0.65 * h_dn, CYAN, idx + 1 == order.len());
-        cv.glyph(G_DOWN, 11.0, dn_r, if idx + 1 == order.len() { SUB } else { WHITE }, if idx + 1 == order.len() { 0.35 } else { 0.95 });
-        if idx + 1 < order.len() {
-            hits.push(ModalHit { rect: dn_r, action: ModalAction::PriorityDown(tab) });
-        }
-
-        y += 54.0;
-    }
-}
+// ---- Page 3: Minimal & Collapsed UI Appearance ----------------------------------
 
 fn draw_page_minimal_collapsed(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
     let lang = st.lang();
     let mut y = r.y;
     let m = &st.settings.minimal_ui;
     let c = &st.settings.collapsed_ui;
-    let hw = (r.w - 8.0) * 0.5;
+    let hw = (r.w - 10.0) * 0.5;
 
     // 1. Minimal UI section
-    cv.text(t(lang, Key::MinimalUiSection), Font::text(12.5, 650, Align::Left), Rect::new(r.x, y, r.w, 20.0), CYAN, 0.95);
+    draw_section_label(cv, r.x, y, r.w, t(lang, Key::MinimalUiSection));
     y += 22.0;
 
-    draw_toggle_row(cv, v, Rect::new(r.x, y, r.w, 32.0), t(lang, Key::HideWhenIdle), m.hide_when_idle, ModalAction::ToggleMinimalHide, hits);
-    y += 36.0;
-    draw_toggle_row(cv, v, Rect::new(r.x, y, hw, 32.0), t(lang, Key::ShowDot), m.show_dot, ModalAction::ToggleMinimalDot, hits);
-    draw_toggle_row(cv, v, Rect::new(r.x + hw + 8.0, y, hw, 32.0), t(lang, Key::ShowClock), m.show_clock, ModalAction::ToggleMinimalClock, hits);
-    y += 36.0;
-    draw_toggle_row(cv, v, Rect::new(r.x, y, hw, 32.0), t(lang, Key::ShowDate), m.show_date, ModalAction::ToggleMinimalDate, hits);
-    draw_toggle_row(cv, v, Rect::new(r.x + hw + 8.0, y, hw, 32.0), t(lang, Key::ShowBattery), m.show_battery, ModalAction::ToggleMinimalBattery, hits);
-    y += 44.0;
+    draw_switch_row(cv, v, Rect::new(r.x, y, r.w, 36.0), t(lang, Key::HideWhenIdle), m.hide_when_idle, ModalAction::ToggleMinimalHide, hits);
+    y += 42.0;
+    draw_switch_row(cv, v, Rect::new(r.x, y, hw, 36.0), t(lang, Key::ShowDot), m.show_dot, ModalAction::ToggleMinimalDot, hits);
+    draw_switch_row(cv, v, Rect::new(r.x + hw + 10.0, y, hw, 36.0), t(lang, Key::ShowClock), m.show_clock, ModalAction::ToggleMinimalClock, hits);
+    y += 42.0;
+    draw_switch_row(cv, v, Rect::new(r.x, y, hw, 36.0), t(lang, Key::ShowDate), m.show_date, ModalAction::ToggleMinimalDate, hits);
+    draw_switch_row(cv, v, Rect::new(r.x + hw + 10.0, y, hw, 36.0), t(lang, Key::ShowBattery), m.show_battery, ModalAction::ToggleMinimalBattery, hits);
+    y += 50.0;
 
     // 2. Collapsed UI when activities run
-    cv.text(t(lang, Key::CollapsedUiSection), Font::text(12.5, 650, Align::Left), Rect::new(r.x, y, r.w, 20.0), CYAN, 0.95);
+    draw_section_label(cv, r.x, y, r.w, t(lang, Key::CollapsedUiSection));
     y += 22.0;
 
-    let tw = (r.w - 12.0) / 3.0;
-    let row1 = [
-        (t(lang, Key::FocusShowIcon), c.focus_show_icon, ModalAction::ToggleFocusIcon),
-        (t(lang, Key::FocusShowLabel), c.focus_show_label, ModalAction::ToggleFocusLabel),
-        (t(lang, Key::FocusShowTime), c.focus_show_time, ModalAction::ToggleFocusTime),
+    let pairs = [
+        (
+            (t(lang, Key::FocusShowIcon), c.focus_show_icon, ModalAction::ToggleFocusIcon),
+            (t(lang, Key::FocusShowTime), c.focus_show_time, ModalAction::ToggleFocusTime),
+        ),
+        (
+            (t(lang, Key::MediaShowArt), c.media_show_art, ModalAction::ToggleMediaArt),
+            (t(lang, Key::MediaShowEq), c.media_show_eq, ModalAction::ToggleMediaEq),
+        ),
+        (
+            (t(lang, Key::TodoShowIcon), c.todo_show_icon, ModalAction::ToggleTodoIcon),
+            (t(lang, Key::TodoShowCount), c.todo_show_count, ModalAction::ToggleTodoCount),
+        ),
     ];
-    for (i, (lbl, chk, act)) in row1.into_iter().enumerate() {
-        draw_toggle_row(cv, v, Rect::new(r.x + i as f32 * (tw + 6.0), y, tw, 34.0), lbl, chk, act, hits);
-    }
-    y += 40.0;
 
-    let row2 = [
-        (t(lang, Key::MediaShowArt), c.media_show_art, ModalAction::ToggleMediaArt),
-        (t(lang, Key::MediaShowTitle), c.media_show_title, ModalAction::ToggleMediaTitle),
-        (t(lang, Key::MediaShowEq), c.media_show_eq, ModalAction::ToggleMediaEq),
-    ];
-    for (i, (lbl, chk, act)) in row2.into_iter().enumerate() {
-        draw_toggle_row(cv, v, Rect::new(r.x + i as f32 * (tw + 6.0), y, tw, 34.0), lbl, chk, act, hits);
-    }
-    y += 40.0;
-
-    let row3 = [
-        (t(lang, Key::TodoShowIcon), c.todo_show_icon, ModalAction::ToggleTodoIcon),
-        (t(lang, Key::TodoShowText), c.todo_show_text, ModalAction::ToggleTodoText),
-        (t(lang, Key::TodoShowCount), c.todo_show_count, ModalAction::ToggleTodoCount),
-    ];
-    for (i, (lbl, chk, act)) in row3.into_iter().enumerate() {
-        draw_toggle_row(cv, v, Rect::new(r.x + i as f32 * (tw + 6.0), y, tw, 34.0), lbl, chk, act, hits);
+    for (left, right) in pairs {
+        draw_switch_row(cv, v, Rect::new(r.x, y, hw, 36.0), left.0, left.1, left.2, hits);
+        draw_switch_row(cv, v, Rect::new(r.x + hw + 10.0, y, hw, 36.0), right.0, right.1, right.2, hits);
+        y += 42.0;
     }
 }
+
+// ---- Page 4: Hover UI & Audio-Reactive Wave Settings ----------------------------
 
 fn draw_page_hover(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits: &mut Vec<ModalHit>) {
     let lang = st.lang();
     let mut y = r.y;
     let hcfg = &st.settings.hover_ui;
     let mcfg = &st.settings.music_anim;
-    let hw = (r.w - 8.0) * 0.5;
+    let hw = (r.w - 10.0) * 0.5;
 
-    // 1. Hover UI toggles in a clean 2-column grid
-    cv.text(t(lang, Key::HoverUiSection), Font::text(12.0, 650, Align::Left), Rect::new(r.x, y, r.w, 18.0), CYAN, 0.95);
-    y += 20.0;
+    // 1. Hover UI toggles (2-column switch grid)
+    draw_section_label(cv, r.x, y, r.w, t(lang, Key::HoverUiSection));
+    y += 22.0;
 
     let pairs = [
         (
             (t(lang, Key::ShowClock), hcfg.show_clock, ModalAction::ToggleHoverClock),
-            Some((t(lang, Key::ShowDate), hcfg.show_date, ModalAction::ToggleHoverDate)),
+            (t(lang, Key::ShowDate), hcfg.show_date, ModalAction::ToggleHoverDate),
         ),
         (
             (t(lang, Key::ShowBattery), hcfg.show_battery, ModalAction::ToggleHoverBattery),
-            Some((t(lang, Key::ShowWifi), hcfg.show_wifi, ModalAction::ToggleHoverWifi)),
+            (t(lang, Key::ShowWifi), hcfg.show_wifi, ModalAction::ToggleHoverWifi),
         ),
         (
             (t(lang, Key::ShowHeadphones), hcfg.show_headphones, ModalAction::ToggleHoverHeadphones),
-            Some((t(lang, Key::ShowSlideControls), hcfg.show_slide_controls, ModalAction::ToggleHoverSlide)),
-        ),
-        (
-            (t(lang, Key::ShowAddButton), hcfg.show_add_button, ModalAction::ToggleHoverAddBtn),
-            None,
+            (t(lang, Key::ShowSlideControls), hcfg.show_slide_controls, ModalAction::ToggleHoverSlide),
         ),
     ];
     for (left, right) in pairs {
-        draw_toggle_row(cv, v, Rect::new(r.x, y, hw, 30.0), left.0, left.1, left.2, hits);
-        if let Some(rt) = right {
-            draw_toggle_row(cv, v, Rect::new(r.x + hw + 8.0, y, hw, 30.0), rt.0, rt.1, rt.2, hits);
-        }
-        y += 34.0;
+        draw_switch_row(cv, v, Rect::new(r.x, y, hw, 36.0), left.0, left.1, left.2, hits);
+        draw_switch_row(cv, v, Rect::new(r.x + hw + 10.0, y, hw, 36.0), right.0, right.1, right.2, hits);
+        y += 42.0;
     }
 
-    y += 6.0;
+    y += 10.0;
 
     // 2. Audio-Reactive Music Animation customization section
     let sec_title = if lang == Lang::Vi {
-        "Tuỳ chỉnh Animation Nhạc theo Âm thanh (Audio-Reactive)"
+        "Tuỳ chỉnh Sóng nhạc (Audio-Reactive)"
     } else {
-        "Audio-Reactive Music Wave Customization"
+        "Audio-Reactive Music Wave"
     };
-    cv.text(sec_title, Font::text(12.0, 650, Align::Left), Rect::new(r.x, y, r.w, 18.0), MINT_HI, 0.98);
+    draw_section_label(cv, r.x, y, r.w, sec_title);
     y += 22.0;
 
-    // Row A: Wave Style (AudioReactive / SmoothWave / BouncePulse)
-    let style_lbl = if lang == Lang::Vi { "Kiểu sóng nhạc:" } else { "Wave mode:" };
-    cv.text(style_lbl, Font::text(11.0, 500, Align::Left), Rect::new(r.x, y, 110.0, 28.0), TEXT_SOFT, 0.9);
-    let sw = (r.w - 114.0 - 12.0) / 3.0;
+    // Row A: Wave Style
+    let style_lbl = if lang == Lang::Vi { "Kiểu sóng:" } else { "Wave mode:" };
+    cv.text(style_lbl, Font::text(11.5, 500, Align::Left), Rect::new(r.x, y, 96.0, 32.0), TEXT_SOFT, 0.95);
+    let sw = (r.w - 100.0 - 12.0) / 3.0;
     let styles = [
         (WaveStyle::AudioReactive, if lang == Lang::Vi { "Theo Âm thanh" } else { "Audio Reactive" }),
         (WaveStyle::SmoothWave, if lang == Lang::Vi { "Sóng Mượt" } else { "Smooth Wave" }),
         (WaveStyle::BouncePulse, if lang == Lang::Vi { "Nhịp Bass" } else { "Bass Pulse" }),
     ];
     for (i, (st_mode, label)) in styles.into_iter().enumerate() {
-        let br = Rect::new(r.x + 114.0 + i as f32 * (sw + 6.0), y, sw, 28.0);
+        let br = Rect::new(r.x + 100.0 + i as f32 * (sw + 6.0), y, sw, 32.0);
         let active = mcfg.style == st_mode;
         let act = ModalAction::SetWaveStyle(st_mode);
         let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, br, 9.0, if active { 0.85 } else { 0.15 + 0.45 * h }, CYAN, !active);
-        cv.text(
-            label,
-            Font::text(11.0, if active { 650 } else { 500 }, Align::Center),
-            br,
-            if active { WHITE } else { TEXT_SOFT },
-            0.96,
-        );
+        if active {
+            cv.fill_round(br, 8.0, WHITE, 0.94);
+            cv.text(label, Font::text(11.0, 650, Align::Center), br, BG, 1.0);
+        } else {
+            cv.fill_round(br, 8.0, WHITE, 0.06 + 0.06 * h);
+            cv.stroke_round(br.inset(0.5, 0.5), 7.5, 1.0, WHITE, 0.12);
+            cv.text(label, Font::text(11.0, 500, Align::Center), br, TEXT_SOFT, 0.95);
+        }
         hits.push(ModalHit { rect: br, action: act });
     }
-    y += 34.0;
+    y += 40.0;
 
     // Row B: Audio Sensitivity (1..=4)
     let sens_lbl = if lang == Lang::Vi { "Độ nhạy âm:" } else { "Sensitivity:" };
-    cv.text(sens_lbl, Font::text(11.0, 500, Align::Left), Rect::new(r.x, y, 110.0, 28.0), TEXT_SOFT, 0.9);
-    let kw = (r.w - 114.0 - 18.0) / 4.0;
+    cv.text(sens_lbl, Font::text(11.5, 500, Align::Left), Rect::new(r.x, y, 96.0, 32.0), TEXT_SOFT, 0.95);
+    let kw = (r.w - 100.0 - 18.0) / 4.0;
     let sens_opts = [
         (1u8, if lang == Lang::Vi { "Thấp (0.6x)" } else { "Low (0.6x)" }),
         (2u8, if lang == Lang::Vi { "Chuẩn (1.0x)" } else { "Normal (1x)" }),
@@ -653,56 +771,57 @@ fn draw_page_hover(cv: &mut Canvas, st: &AppState, v: &ModalView, r: Rect, hits:
         (4u8, if lang == Lang::Vi { "Cực đại (2.2x)" } else { "Max (2.2x)" }),
     ];
     for (i, (lvl, label)) in sens_opts.into_iter().enumerate() {
-        let br = Rect::new(r.x + 114.0 + i as f32 * (kw + 6.0), y, kw, 28.0);
+        let br = Rect::new(r.x + 100.0 + i as f32 * (kw + 6.0), y, kw, 32.0);
         let active = mcfg.sensitivity.clamp(1, 4) == lvl;
         let act = ModalAction::SetWaveSensitivity(lvl);
         let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, br, 9.0, if active { 0.85 } else { 0.15 + 0.45 * h }, MINT_HI, !active);
-        cv.text(
-            label,
-            Font::text(10.5, if active { 650 } else { 500 }, Align::Center),
-            br,
-            if active { WHITE } else { TEXT_SOFT },
-            0.96,
-        );
+        if active {
+            cv.fill_round(br, 8.0, WHITE, 0.94);
+            cv.text(label, Font::text(10.5, 650, Align::Center), br, BG, 1.0);
+        } else {
+            cv.fill_round(br, 8.0, WHITE, 0.06 + 0.06 * h);
+            cv.stroke_round(br.inset(0.5, 0.5), 7.5, 1.0, WHITE, 0.12);
+            cv.text(label, Font::text(10.5, 500, Align::Center), br, TEXT_SOFT, 0.95);
+        }
         hits.push(ModalHit { rect: br, action: act });
     }
-    y += 34.0;
+    y += 40.0;
 
-    // Row C: Wave Color (White / Mint / Cyan / Violet)
-    let col_lbl = if lang == Lang::Vi { "Màu sóng nhạc:" } else { "Wave color:" };
-    cv.text(col_lbl, Font::text(11.0, 500, Align::Left), Rect::new(r.x, y, 110.0, 28.0), TEXT_SOFT, 0.9);
-    let colors = [
-        (WaveColor::White, if lang == Lang::Vi { "Trắng" } else { "White" }, WHITE),
-        (WaveColor::Mint, if lang == Lang::Vi { "Xanh lá" } else { "Mint" }, MINT_HI),
-        (WaveColor::Cyan, if lang == Lang::Vi { "Xanh dương" } else { "Cyan" }, CYAN),
-        (WaveColor::Violet, if lang == Lang::Vi { "Tím" } else { "Violet" }, VIOLET),
+    // Row C: Monochrome Wave Shade (White / Silver / SoftGray / DimGray)
+    let col_lbl = if lang == Lang::Vi { "Sắc độ sóng:" } else { "Wave shade:" };
+    cv.text(col_lbl, Font::text(11.5, 500, Align::Left), Rect::new(r.x, y, 96.0, 32.0), TEXT_SOFT, 0.95);
+    let shades = [
+        (WaveColor::White, if lang == Lang::Vi { "Trắng sáng" } else { "Pure White" }, WHITE),
+        (WaveColor::Silver, if lang == Lang::Vi { "Bạc" } else { "Silver" }, SILVER),
+        (WaveColor::SoftGray, if lang == Lang::Vi { "Xám nhạt" } else { "Soft Gray" }, TEXT_SOFT),
+        (WaveColor::DimGray, if lang == Lang::Vi { "Xám trầm" } else { "Dim Gray" }, SUB),
     ];
-    for (i, (wc, label, rgb)) in colors.into_iter().enumerate() {
-        let br = Rect::new(r.x + 114.0 + i as f32 * (kw + 6.0), y, kw, 28.0);
+    for (i, (wc, label, rgb)) in shades.into_iter().enumerate() {
+        let br = Rect::new(r.x + 100.0 + i as f32 * (kw + 6.0), y, kw, 32.0);
         let active = mcfg.color == wc;
         let act = ModalAction::SetWaveColor(wc);
         let h = if v.hover == Some(act) { 1.0 } else { 0.0 };
-        draw_glass_pill(cv, v.cursor, br, 9.0, if active { 0.85 } else { 0.15 + 0.45 * h }, rgb, !active);
-        cv.fill_circle(br.x + 12.0, br.y + br.h * 0.5, 4.0, rgb, 1.0);
-        cv.text(
-            label,
-            Font::text(10.5, if active { 650 } else { 500 }, Align::Left),
-            Rect::new(br.x + 20.0, br.y, br.w - 22.0, br.h),
-            if active { WHITE } else { TEXT_SOFT },
-            0.96,
-        );
+        if active {
+            cv.fill_round(br, 8.0, WHITE, 0.94);
+            cv.fill_circle(br.x + 12.0, br.y + br.h * 0.5, 4.0, BG, 1.0);
+            cv.text(label, Font::text(10.5, 650, Align::Left), Rect::new(br.x + 20.0, br.y, br.w - 22.0, br.h), BG, 1.0);
+        } else {
+            cv.fill_round(br, 8.0, WHITE, 0.06 + 0.06 * h);
+            cv.stroke_round(br.inset(0.5, 0.5), 7.5, 1.0, WHITE, 0.12);
+            cv.fill_circle(br.x + 12.0, br.y + br.h * 0.5, 4.0, rgb, 1.0);
+            cv.text(label, Font::text(10.5, 500, Align::Left), Rect::new(br.x + 20.0, br.y, br.w - 22.0, br.h), TEXT_SOFT, 0.95);
+        }
         hits.push(ModalHit { rect: br, action: act });
     }
-    y += 34.0;
+    y += 42.0;
 
-    // Row D: Album Art & Playhead Beat Pulse toggle
+    // Row D: Album Art Beat Pulse toggle switch
     let pulse_lbl = if lang == Lang::Vi {
-        "Nhịp đập ảnh bìa & thanh thời gian theo Bass âm thanh"
+        "Nhịp đập ảnh bìa bài hát theo Bass âm thanh"
     } else {
-        "Pulse album art & progress playhead with audio beat"
+        "Pulse album cover art with audio bass beat"
     };
-    draw_toggle_row(cv, v, Rect::new(r.x, y, r.w, 30.0), pulse_lbl, mcfg.art_pulse, ModalAction::ToggleArtPulse, hits);
+    draw_switch_row(cv, v, Rect::new(r.x, y, r.w, 36.0), pulse_lbl, mcfg.art_pulse, ModalAction::ToggleArtPulse, hits);
 }
 
 pub fn hit_test_modal(hits: &[ModalHit], x: f32, y: f32) -> Option<ModalAction> {
