@@ -4,7 +4,7 @@
 //! feedback (no icon scaling on hover), and real-time audio-reactive sound waves.
 
 use ailan_core::i18n::{short_date, t, Key, Lang};
-use ailan_core::settings::{Tab, WaveColor};
+use ailan_core::settings::Tab;
 use ailan_core::state::{BannerIcon, Collapsed, OsdKind};
 use ailan_core::time::{civil, fmt_duration};
 use ailan_core::timer::Phase;
@@ -19,12 +19,9 @@ pub const BG: u32 = 0x000000;
 pub const PANEL_BG: u32 = 0x0A0A0C;
 #[allow(dead_code)]
 pub const SURFACE: u32 = 0x141417;
-pub const SURFACE_HI: u32 = 0x1F1F24;
 
 pub const WHITE: u32 = 0xFFFFFF;
 pub const TEXT_SOFT: u32 = 0xA1A1AA;
-pub const SUB: u32 = 0x71717A;
-pub const SILVER: u32 = 0xE4E4E7;
 
 // ---- glyphs (Segoe MDL2 Assets) -------------------------------------------------
 pub const G_PLAY: char = '\u{E768}';
@@ -48,46 +45,37 @@ pub const G_CHEVRON_LEFT: char = '\u{E76B}';
 pub const G_CHEVRON_RIGHT: char = '\u{E76C}';
 pub const G_SETTINGS: char = '\u{E713}';
 pub const G_HOME: char = '\u{E80F}';
-pub const G_PIN: char = '\u{E718}';
 
 // ---- geometry (DIP) -------------------------------------------------------------
-/// Window width includes room for the 420px expanded notch + 2×22px concave ears.
+/// Window width includes room for the expanded notch + its concave ears.
 pub const WIN_W: f32 = 480.0;
 pub const WIN_H: f32 = 152.0;
-pub const EXPANDED: (f32, f32) = (420.0, 140.0);
+/// On-screen size of the expanded island. Its pages are laid out on a 420×140 grid
+/// (`EXPANDED_LAYOUT`) and drawn scaled down, so the hover view takes less of the screen.
+pub const EXPANDED: (f32, f32) = (380.0, 127.0);
+const EXPANDED_LAYOUT: (f32, f32) = (420.0, 140.0);
 
 const RADIUS_COLLAPSED: f32 = 14.0;
-const RADIUS_BANNER: f32 = 19.0;
-const RADIUS_EXPANDED: f32 = 32.0;
+const RADIUS_EXPANDED: f32 = 29.0;
 
 pub const EAR_COLLAPSED: f32 = 10.0;
-pub const EAR_BANNER: f32 = 13.0;
-pub const EAR_EXPANDED: f32 = 22.0;
+pub const EAR_EXPANDED: f32 = 20.0;
 
 const TODO_ROWS: usize = 3;
 
-pub fn collapsed_size(st: &AppState, mode: Collapsed) -> (f32, f32) {
+pub fn collapsed_size(mode: Collapsed) -> (f32, f32) {
     match mode {
-        Collapsed::Minimal => {
-            if st.settings.minimal_ui.hide_when_idle {
-                (110.0, 5.0)
-            } else {
-                (150.0, 30.0)
-            }
-        }
-        Collapsed::Clock | Collapsed::Media | Collapsed::Timer | Collapsed::Todo => (150.0, 30.0),
-        Collapsed::PinPeek => (230.0, 36.0),
+        Collapsed::Minimal | Collapsed::Media | Collapsed::Timer | Collapsed::Todo => (150.0, 30.0),
+        // Alerts stay a slim one-line pill instead of a big card.
         Collapsed::Osd => (240.0, 34.0),
-        Collapsed::Banner => (310.0, 60.0),
+        Collapsed::Banner => (250.0, 34.0),
     }
 }
 
 /// Top-edge concave ear radius for a given expansion state and collapsed mode.
 pub fn ear_for(expand: f32, mode: Collapsed) -> f32 {
     let base_ear = match mode {
-        Collapsed::Banner => EAR_BANNER,
-        Collapsed::PinPeek => 12.0,
-        Collapsed::Osd => 11.0,
+        Collapsed::Osd | Collapsed::Banner => 11.0,
         _ => EAR_COLLAPSED,
     };
     base_ear + (EAR_EXPANDED - base_ear) * expand.clamp(0.0, 1.0)
@@ -96,12 +84,26 @@ pub fn ear_for(expand: f32, mode: Collapsed) -> f32 {
 /// Bottom corner radius for a given expansion state and collapsed mode.
 fn radius_for(expand: f32, mode: Collapsed) -> f32 {
     let base_r = match mode {
-        Collapsed::Banner => RADIUS_BANNER,
-        Collapsed::PinPeek => 18.0,
-        Collapsed::Osd => 16.0,
+        Collapsed::Osd | Collapsed::Banner => 16.0,
         _ => RADIUS_COLLAPSED,
     };
     base_r + (RADIUS_EXPANDED - base_r) * expand.clamp(0.0, 1.0)
+}
+
+/// Gaze offset (DIP) of the idle eyes toward the pointer. `center` and `cursor` are in
+/// screen pixels, `scale` is the monitor DPI scale. Deflection eases out with distance
+/// and saturates at ±3.5 px horizontally / ±2.5 px vertically.
+pub fn eye_offset(center: (f32, f32), cursor: (f32, f32), scale: f32) -> (f32, f32) {
+    let s = scale.max(0.5);
+    let dx = (cursor.0 - center.0) / s;
+    let dy = (cursor.1 - center.1) / s;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1.0 {
+        return (0.0, 0.0);
+    }
+    let reach = (dist / 240.0).min(1.0);
+    let ease = reach * (2.0 - reach);
+    (dx / dist * 3.5 * ease, dy / dist * 2.5 * ease)
 }
 
 /// Pill rect (window coordinates, DIP) for a given animated size.
@@ -171,8 +173,10 @@ pub struct View<'a> {
     pub hover_t: f32,
     /// Index spring position among visible hover activities for smooth slide feedback.
     pub tab_pos: f32,
-    /// Mouse position in DIP while inside the notch.
-    pub cursor: Option<(f32, f32)>,
+    /// Smoothed gaze offset of the idle eyes in DIP (follows the pointer anywhere on screen).
+    pub eye: (f32, f32),
+    /// 1 → 0 glow right after something flew into the island.
+    pub glow: f32,
     /// Real-time 5-band audio heights (0.15..=1.0) driven by system audio output.
     pub audio_bars: [f32; 5],
     /// Smoothed master audio peak (0.0..=1.0) for album art beat pulse.
@@ -196,10 +200,7 @@ fn scale_rect(r: Rect, factor: f32) -> Rect {
 }
 
 /// Renders the pure solid-black notch body with concave top ears on both sides.
-fn draw_notch_shell(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, radius: f32, ear: f32) {
-    if v.mode == Collapsed::Minimal && st.settings.minimal_ui.hide_when_idle && v.expand < 0.02 {
-        return;
-    }
+fn draw_notch_shell(cv: &mut Canvas, p: Rect, radius: f32, ear: f32) {
     cv.fill_notch(p, radius, ear, BG, 1.0);
 }
 
@@ -210,7 +211,11 @@ pub fn draw(cv: &mut Canvas, st: &AppState, v: &View) -> Vec<Hit> {
     let ear = ear_for(v.expand, v.mode);
 
     cv.alpha = 1.0;
-    draw_notch_shell(cv, st, v, p, radius, ear);
+    draw_notch_shell(cv, p, radius, ear);
+    if v.glow > 0.01 {
+        let g = crate::gfx::Gradient::new(&[(0.0, WHITE, 0.30), (1.0, WHITE, 0.0)]);
+        cv.fill_circle_radial(p.x + p.w * 0.5, p.y + p.h * 0.5, p.w * 0.55, g, v.glow);
+    }
 
     let collapsed_alpha = (1.0 - v.expand * 2.4).clamp(0.0, 1.0);
     let expanded_alpha = ((v.expand - 0.38) / 0.62).clamp(0.0, 1.0);
@@ -221,10 +226,20 @@ pub fn draw(cv: &mut Canvas, st: &AppState, v: &View) -> Vec<Hit> {
     }
     if expanded_alpha > 0.01 {
         cv.alpha = expanded_alpha;
+        // Draw the 420×140 page layout scaled into the smaller on-screen island, then map
+        // its hit rects back to window coordinates.
         let full = pill_rect(EXPANDED.0, EXPANDED.1);
+        let s = EXPANDED.0 / EXPANDED_LAYOUT.0;
         let y_offset = (1.0 - expanded_alpha) * -8.0;
-        let animated_full = Rect::new(full.x, full.y + y_offset, full.w, full.h);
-        draw_expanded(cv, st, v, animated_full, &mut hits);
+        let layout = Rect::new(0.0, y_offset / s, EXPANDED_LAYOUT.0, EXPANDED_LAYOUT.1);
+        let mut local = Vec::new();
+        cv.set_transform(full.x, full.y, s);
+        draw_expanded(cv, st, v, layout, &mut local);
+        cv.reset_transform();
+        hits.extend(local.into_iter().map(|h| Hit {
+            rect: Rect::new(full.x + h.rect.x * s, full.y + h.rect.y * s, h.rect.w * s, h.rect.h * s),
+            action: h.action,
+        }));
     }
     cv.alpha = 1.0;
     if v.expand < 0.5 {
@@ -245,24 +260,15 @@ fn draw_status_ring(cv: &mut Canvas, st: &AppState, cx: f32, cy: f32) {
     cv.stroke_arc(cx, cy, r, -90.0, pct * 360.0, stroke, WHITE, 0.95);
 }
 
-fn wave_color_rgb(c: WaveColor) -> u32 {
-    match c {
-        WaveColor::White => WHITE,
-        WaveColor::Silver => SILVER,
-        WaveColor::SoftGray => TEXT_SOFT,
-        WaveColor::DimGray => SUB,
-    }
-}
-
 /// 5 vertical sound-wave bars (`14px` tall, `2.2px` wide, `2px` gap),
 /// animated in real time by `v.audio_bars`.
-fn draw_wave_bars(cv: &mut Canvas, st: &AppState, v: &View, r: Rect, playing: bool) {
+fn draw_wave_bars(cv: &mut Canvas, v: &View, r: Rect, playing: bool) {
     let bw = 2.2;
     let gap = 2.0;
     let total_w = bw * 5.0 + gap * 4.0;
     let start_x = r.x + (r.w - total_w) * 0.5;
     let cy = r.y + r.h * 0.5;
-    let col = wave_color_rgb(st.settings.music_anim.color);
+    let col = WHITE;
     let alpha = if playing { 0.96 } else { 0.40 };
 
     for (i, &bar_val) in v.audio_bars.iter().enumerate() {
@@ -295,10 +301,9 @@ fn draw_arrow_btn(cv: &mut Canvas, v: &View, hits: &mut Vec<Hit>, cx: f32, cy: f
     hits.push(Hit { rect: Rect::new(cx - 14.0, cy - 14.0, 28.0, 28.0), action });
 }
 
-// ---- collapsed (Resting / Closed 150×30, Banner 310×60) -------------------------
+// ---- collapsed (Resting / Closed 150×30, alerts 240–250×34) ---------------------
 
 fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>) {
-    let lang = st.lang();
     let p = v.pill;
     let cy = p.y + p.h * 0.5;
     let c = civil(v.now, st.offset_min);
@@ -306,73 +311,50 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
 
     match v.mode {
         Collapsed::Minimal => {
-            let m = &st.settings.minimal_ui;
-            if m.hide_when_idle {
-                return;
-            }
-            if !m.show_clock && !m.show_date && !m.show_battery {
-                if m.show_dot {
-                    let phase_ms = v.now.rem_euclid(4_200);
-                    let blink = if (3_900..4_080).contains(&phase_ms) {
-                        let t = (phase_ms - 3_900) as f32 / 90.0;
-                        (1.0 - t).abs().clamp(0.12, 1.0)
-                    } else {
-                        1.0
-                    };
-                    let look_dx = v
-                        .cursor
-                        .map(|(mx, _)| ((mx - (p.x + p.w * 0.5)) / 40.0).clamp(-2.2, 2.2))
-                        .unwrap_or(0.0);
-                    let eye_w = 8.2;
-                    let eye_h = 12.2 * blink;
-                    let gap = 14.5;
-                    let cx = p.x + p.w * 0.5 + look_dx;
-                    let left_eye = Rect::new(cx - gap * 0.5 - eye_w, cy - eye_h * 0.5, eye_w, eye_h);
-                    let right_eye = Rect::new(cx + gap * 0.5, cy - eye_h * 0.5, eye_w, eye_h);
-                    cv.fill_round(left_eye, (eye_w * 0.5).min(eye_h * 0.5), WHITE, 0.96);
-                    cv.fill_round(right_eye, (eye_w * 0.5).min(eye_h * 0.5), WHITE, 0.96);
-                }
-                return;
-            }
-            if m.show_battery {
-                draw_status_ring(cv, st, p.x + 20.0, cy);
-            }
-            let time_s = format!("{:02}:{:02}", c.hour, c.minute);
-            cv.text(&time_s, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
+            // Idle: just the eyes. They blink every ~4s and look toward the pointer.
+            let phase_ms = v.now.rem_euclid(4_200);
+            let blink = if (3_900..4_080).contains(&phase_ms) {
+                let t = (phase_ms - 3_900) as f32 / 90.0;
+                (1.0 - t).abs().clamp(0.12, 1.0)
+            } else {
+                1.0
+            };
+            let eye_w = 8.2;
+            let eye_h = 12.2 * blink;
+            let gap = 14.5;
+            let cx = p.x + p.w * 0.5 + v.eye.0;
+            let ecy = cy + v.eye.1;
+            let left_eye = Rect::new(cx - gap * 0.5 - eye_w, ecy - eye_h * 0.5, eye_w, eye_h);
+            let right_eye = Rect::new(cx + gap * 0.5, ecy - eye_h * 0.5, eye_w, eye_h);
+            cv.fill_round(left_eye, (eye_w * 0.5).min(eye_h * 0.5), WHITE, 0.96);
+            cv.fill_round(right_eye, (eye_w * 0.5).min(eye_h * 0.5), WHITE, 0.96);
         }
-        Collapsed::Clock | Collapsed::Media => {
+        Collapsed::Media => {
             draw_status_ring(cv, st, p.x + 20.0, cy);
             let time_s = format!("{:02}:{:02}", c.hour, c.minute);
             cv.text(&time_s, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
+            draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Timer => {
-            if st.settings.collapsed_ui.focus_show_icon {
-                draw_status_ring(cv, st, p.x + 20.0, cy);
-            }
-            let rem = st.pomodoro.remaining(v.now);
-            let label = if st.settings.collapsed_ui.focus_show_time {
-                fmt_duration(rem)
-            } else {
-                format!("{:02}:{:02}", c.hour, c.minute)
-            };
-            cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
+            // Focus progress ring + remaining time.
+            let (rx, r) = (p.x + 20.0, 5.4);
+            cv.stroke_circle(rx, cy, r, 2.2, WHITE, 0.24);
+            cv.stroke_arc(rx, cy, r, -90.0, st.pomodoro.progress(v.now).clamp(0.0, 1.0) * 360.0, 2.2, WHITE, 0.95);
+            let label = fmt_duration(st.pomodoro.remaining(v.now));
+            let alpha = if st.pomodoro.is_running() { 0.98 } else { 0.62 };
+            cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, alpha);
+            draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Todo => {
-            if st.settings.collapsed_ui.todo_show_icon {
-                draw_status_ring(cv, st, p.x + 20.0, cy);
-            }
-            let total = st.data.todos.items.len();
-            let done = total.saturating_sub(st.data.todos.pending_count());
-            let label = if st.settings.collapsed_ui.todo_show_count && total > 0 {
-                format!("{done}/{total}")
-            } else {
-                format!("{:02}:{:02}", c.hour, c.minute)
-            };
-            cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
+            // Today's progress: done / total.
+            let today = st.data.todos.today_items(v.now, st.offset_min);
+            let total = today.len().max(1);
+            let done = today.iter().filter(|t| t.done).count();
+            let (rx, r) = (p.x + 20.0, 5.4);
+            cv.stroke_circle(rx, cy, r, 2.2, WHITE, 0.24);
+            cv.stroke_arc(rx, cy, r, -90.0, done as f32 / total as f32 * 360.0, 2.2, WHITE, 0.95);
+            cv.text(&format!("{done}/{}", today.len()), Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
+            draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Osd => {
             let Some(o) = &st.osd else { return };
@@ -395,111 +377,45 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
         Collapsed::Banner => {
             let Some(b) = &st.banner else { return };
             let (g, sweep) = match b.icon {
-                BannerIcon::Charging => {
-                    let pct = st.battery.flatten().map(|x| x.percent as f32 / 100.0).unwrap_or(0.75);
-                    (G_BOLT, pct * 360.0)
-                }
-                BannerIcon::BatteryLow => {
-                    let pct = st.battery.flatten().map(|x| x.percent as f32 / 100.0).unwrap_or(0.20);
-                    (G_BOLT, pct * 360.0)
-                }
-                BannerIcon::Headphones => (G_HEADPHONE, 252.0),
-                BannerIcon::Reminder => (G_BELL, 270.0),
-                BannerIcon::Focus => (G_TIMER, 300.0),
-                BannerIcon::Break => (G_MOON, 270.0),
-            };
-            let ring_cx = p.x + 35.0;
-            let ring_cy = p.y + 30.0;
-            cv.stroke_circle(ring_cx, ring_cy, 11.0, 3.8, WHITE, 0.22);
-            cv.stroke_arc(ring_cx, ring_cy, 11.0, -90.0, sweep, 3.8, WHITE, 0.95);
-            cv.glyph(g, 11.5, Rect::new(ring_cx - 12.0, ring_cy - 12.0, 24.0, 24.0), WHITE, 1.0);
-
-            let tx = p.x + 64.0;
-            let tw = p.w - 140.0;
-            cv.text(&b.title, Font::text(14.0, 650, Align::Left), Rect::new(tx, p.y + 11.0, tw, 20.0), WHITE, 1.0);
-            cv.text(&b.body, Font::text(11.5, 400, Align::Left), Rect::new(tx, p.y + 31.0, tw, 18.0), WHITE, 0.58);
-
-            match b.icon {
                 BannerIcon::Charging | BannerIcon::BatteryLow => {
-                    let pct_str = st
-                        .battery
-                        .flatten()
-                        .map(|x| format!("{}%", x.percent))
-                        .unwrap_or_else(|| b.body.clone());
-                    cv.text(
-                        &pct_str,
-                        Font::text(21.0, 650, Align::Right),
-                        Rect::new(p.right() - 84.0, p.y, 62.0, p.h),
-                        WHITE,
-                        1.0,
-                    );
+                    let pct = st.battery.flatten().map(|x| x.percent as f32 / 100.0).unwrap_or(0.5);
+                    (G_BOLT, pct * 360.0)
                 }
-                BannerIcon::Headphones => {
-                    let badge_cx = p.right() - 35.0;
-                    let badge_cy = p.y + 30.0;
-                    cv.fill_circle(badge_cx, badge_cy, 15.0, SURFACE_HI, 1.0);
-                    cv.stroke_circle(badge_cx, badge_cy, 15.0, 1.2, WHITE, 0.45);
-                    cv.glyph(
-                        G_HEADPHONE,
-                        13.0,
-                        Rect::new(badge_cx - 15.0, badge_cy - 15.0, 30.0, 30.0),
-                        WHITE,
-                        0.98,
-                    );
-                }
-                _ => {
-                    if b.todo_id.is_some() {
-                        let snz_r = Rect::new(p.right() - 120.0, p.y + 17.0, 56.0, 26.0);
-                        let h_snz = hover_amt(v, Action::SnoozeBanner(5));
-                        cv.fill_round(snz_r, 13.0, WHITE, 0.14 + 0.10 * h_snz);
-                        cv.text(t(lang, Key::Snooze5m), Font::text(10.5, 600, Align::Center), snz_r, WHITE, 0.95);
-                        hits.push(Hit { rect: snz_r, action: Action::SnoozeBanner(5) });
+                BannerIcon::Headphones => (G_HEADPHONE, 360.0),
+                BannerIcon::Reminder => (G_BELL, 360.0),
+                BannerIcon::Focus => (G_TIMER, 360.0),
+                BannerIcon::Break => (G_MOON, 360.0),
+            };
+            let (gx, r) = (p.x + 20.0, 8.0);
+            cv.stroke_circle(gx, cy, r, 2.0, WHITE, 0.22);
+            cv.stroke_arc(gx, cy, r, -90.0, sweep, 2.0, WHITE, 0.95);
+            cv.glyph(g, 8.5, Rect::new(gx - 9.0, cy - 9.0, 18.0, 18.0), WHITE, 1.0);
 
-                        let done_r = Rect::new(p.right() - 58.0, p.y + 17.0, 46.0, 26.0);
-                        let h_done = hover_amt(v, Action::CompleteBanner);
-                        cv.fill_round(done_r, 13.0, WHITE, 0.90 + 0.10 * h_done);
-                        cv.text(t(lang, Key::DoneAction), Font::text(10.5, 700, Align::Center), done_r, BG, 1.0);
-                        hits.push(Hit { rect: done_r, action: Action::CompleteBanner });
-                    } else {
-                        let time_s = format!("{:02}:{:02}", c.hour, c.minute);
-                        cv.text(
-                            &time_s,
-                            Font::text(13.0, 600, Align::Right),
-                            Rect::new(p.right() - 72.0, p.y, 52.0, p.h),
-                            WHITE,
-                            0.9,
-                        );
-                    }
+            // One line: reminders show the task itself, other alerts their title.
+            let line = if b.icon == BannerIcon::Reminder { b.body.as_str() } else { b.title.as_str() };
+            let mut right = p.right() - 10.0;
+            if b.todo_id.is_some() {
+                // Compact actions: snooze 5 min and done.
+                let done_r = Rect::new(right - 24.0, cy - 11.0, 24.0, 22.0);
+                let h_done = hover_amt(v, Action::CompleteBanner);
+                cv.fill_round(done_r, 11.0, WHITE, 0.90 + 0.10 * h_done);
+                cv.glyph(G_CHECKMARK, 9.0, done_r, BG, 1.0);
+                hits.push(Hit { rect: done_r.inset(-3.0, -5.0), action: Action::CompleteBanner });
+                let snz_r = Rect::new(done_r.x - 34.0, cy - 11.0, 30.0, 22.0);
+                let h_snz = hover_amt(v, Action::SnoozeBanner(5));
+                cv.fill_round(snz_r, 11.0, WHITE, 0.14 + 0.10 * h_snz);
+                cv.text("+5", Font::text(10.5, 650, Align::Center), snz_r, WHITE, 0.95);
+                hits.push(Hit { rect: snz_r.inset(-2.0, -5.0), action: Action::SnoozeBanner(5) });
+                right = snz_r.x - 6.0;
+            } else if matches!(b.icon, BannerIcon::Charging | BannerIcon::BatteryLow) {
+                if let Some(bat) = st.battery.flatten() {
+                    cv.text(&format!("{}%", bat.percent), Font::text(12.5, 650, Align::Right), Rect::new(right - 44.0, p.y, 44.0, p.h), WHITE, 0.95);
+                    right -= 50.0;
                 }
             }
+            let tx = p.x + 36.0;
+            cv.text(line, Font::text(12.5, 600, Align::Left), Rect::new(tx, p.y, (right - tx).max(0.0), p.h), WHITE, 0.96);
             hits.push(Hit { rect: p, action: Action::DismissBanner });
-        }
-        Collapsed::PinPeek => {
-            let Some(pin) = st.pin_anim else { return };
-            let icon = match pin.tab {
-                Tab::Focus => G_TIMER,
-                Tab::Music => G_MUSIC,
-                Tab::Todo => G_CHECKMARK,
-            };
-            let label = if pin.pinned {
-                t(lang, Key::PinnedToIslandToast)
-            } else {
-                t(lang, Key::UnpinnedFromIslandToast)
-            };
-            let elapsed = (v.now - pin.start).max(0) as f32;
-            let drop_t = (elapsed / 320.0).clamp(0.0, 1.0);
-            let drop_y = -8.0 * (1.0 - drop_t);
-            let icon_r = Rect::new(p.x + 14.0, p.y + 7.0 + drop_y, 22.0, 22.0);
-            cv.fill_round(icon_r, 7.0, WHITE, 0.92);
-            cv.glyph(icon, 12.0, icon_r, BG, 1.0);
-
-            cv.text(
-                label,
-                Font::text(12.0, 650, Align::Left),
-                Rect::new(p.x + 44.0, p.y, p.w - 52.0, p.h),
-                WHITE,
-                0.96,
-            );
         }
     }
 }
@@ -509,25 +425,18 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
 fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
     let lang = st.lang();
     let c = civil(v.now, st.offset_min);
-    let hcfg = &st.settings.hover_ui;
     let playing = st.media.as_ref().is_some_and(|m| m.playing);
 
     // 1. Shared Top Status Row (y = 18): Battery ring + Date & Time + Home icon + Wave bars.
     let hdr_cy = p.y + 18.0;
-    if hcfg.show_battery {
-        draw_status_ring(cv, st, p.x + 146.0, hdr_cy);
-    }
+    draw_status_ring(cv, st, p.x + 146.0, hdr_cy);
     let mut hx = p.x + 160.0;
-    if hcfg.show_date {
-        let ds = format!("{} {}", short_date(lang, &c), c.year);
-        let dw = (ds.chars().count() as f32 * 6.5).max(88.0);
-        cv.text(&ds, Font::text(12.0, 400, Align::Left), Rect::new(hx, p.y + 8.0, dw, 20.0), WHITE, 0.85);
-        hx += dw + 4.0;
-    }
-    if hcfg.show_clock {
-        let time_s = format!("{:02}:{:02}", c.hour, c.minute);
-        cv.text(&time_s, Font::text(12.5, 700, Align::Left), Rect::new(hx, p.y + 8.0, 44.0, 20.0), WHITE, 1.0);
-    }
+    let ds = format!("{} {}", short_date(lang, &c), c.year);
+    let dw = (ds.chars().count() as f32 * 6.5).max(88.0);
+    cv.text(&ds, Font::text(12.0, 400, Align::Left), Rect::new(hx, p.y + 8.0, dw, 20.0), WHITE, 0.85);
+    hx += dw + 4.0;
+    let time_s = format!("{:02}:{:02}", c.hour, c.minute);
+    cv.text(&time_s, Font::text(12.5, 700, Align::Left), Rect::new(hx, p.y + 8.0, 44.0, 20.0), WHITE, 1.0);
 
     // Wave bars and Home icon on the top-right
     let wave_w = 20.0;
@@ -547,14 +456,11 @@ fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut V
     hits.push(Hit { rect: home_r.inset(-3.0, -3.0), action: Action::OpenSettings });
 
     // 5 audio-reactive sound-wave bars
-    draw_wave_bars(cv, st, v, wave_r, playing);
+    draw_wave_bars(cv, v, wave_r, playing);
 
-    // 2. Filter visible activities on Hover UI:
-    // - Music triggers automatically when playing/active, or if pinned.
-    // - Focus & Todo only show when running or pinned.
+    // 2. Visible pages: Focus while a session is on, Music when media is around, To-do always.
     let visible = st.hover_activities();
     if visible.is_empty() {
-        draw_empty_hover(cv, st, v, p, hits);
         return;
     }
 
@@ -568,7 +474,7 @@ fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut V
     let page_r = Rect::new(p.x + slide_dx, p.y, p.w, p.h);
 
     // 3. Left / Right Slide Arrow Buttons only when > 1 visible activity.
-    if hcfg.show_slide_controls && visible.len() > 1 {
+    if visible.len() > 1 {
         if active_tab != Tab::Music {
             draw_arrow_btn(cv, v, hits, p.x + 22.0, p.y + 70.0, true);
         }
@@ -613,40 +519,6 @@ fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut V
     }
 }
 
-/// Displayed when no activity is running or pinned on Hover UI.
-fn draw_empty_hover(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
-    let lang = st.lang();
-    cv.text(
-        t(lang, Key::NoHoverActivity),
-        Font::text(13.5, 650, Align::Center),
-        Rect::new(p.x + 24.0, p.y + 42.0, p.w - 48.0, 20.0),
-        WHITE,
-        0.92,
-    );
-    cv.text(
-        t(lang, Key::NoHoverActivityHint),
-        Font::text(11.0, 400, Align::Center),
-        Rect::new(p.x + 24.0, p.y + 62.0, p.w - 48.0, 18.0),
-        TEXT_SOFT,
-        0.75,
-    );
-
-    let btn_w = 132.0;
-    let btn_r = Rect::new(p.x + (p.w - btn_w) * 0.5, p.y + 92.0, btn_w, 28.0);
-    let h = hover_amt(v, Action::OpenSettings);
-    cv.fill_round(btn_r, 14.0, WHITE, 0.12 + 0.08 * h);
-    cv.stroke_round(btn_r.inset(0.5, 0.5), 13.5, 1.0, WHITE, 0.22 + 0.18 * h);
-    cv.glyph(G_HOME, 11.0, Rect::new(btn_r.x + 12.0, btn_r.y, 18.0, btn_r.h), WHITE, 0.95);
-    cv.text(
-        t(lang, Key::OpenHubButton),
-        Font::text(11.5, 600, Align::Center),
-        Rect::new(btn_r.x + 24.0, btn_r.y, btn_r.w - 32.0, btn_r.h),
-        WHITE,
-        0.96,
-    );
-    hits.push(Hit { rect: btn_r, action: Action::OpenSettings });
-}
-
 // ---- Page 1: Music (`l-music` in 420×140) ---------------------------------------
 
 fn draw_music(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
@@ -679,7 +551,7 @@ fn draw_music(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<
     };
 
     // 1. 62×62 Album Art at (22, 12) with subtle audio-reactive bass pulse when playing.
-    let pulse = if m.playing && st.settings.music_anim.art_pulse {
+    let pulse = if m.playing {
         1.0 + 0.045 * v.audio_peak
     } else {
         1.0
@@ -1105,4 +977,24 @@ pub fn hit_test(hits: &[Hit], x: f32, y: f32) -> Option<Action> {
 
 pub fn max_todo_scroll(st: &AppState) -> usize {
     st.data.todos.items.len().saturating_sub(TODO_ROWS)
+}
+
+#[cfg(test)]
+mod gaze_tests {
+    use super::eye_offset;
+
+    #[test]
+    fn eyes_look_toward_the_pointer_within_bounds() {
+        let c = (1000.0, 15.0);
+        let (dx, dy) = eye_offset(c, (2000.0, 15.0), 1.0);
+        assert!((dx - 3.5).abs() < 1e-3 && dy.abs() < 1e-3, "far right → full right");
+        let (dx, dy) = eye_offset(c, (0.0, 900.0), 1.0);
+        assert!(dx < 0.0 && dy > 0.0, "bottom-left → down-left");
+        assert!(dx.abs() <= 3.5 && dy.abs() <= 2.5);
+        assert_eq!(eye_offset(c, c, 1.0), (0.0, 0.0));
+        // Closer pointer → smaller deflection; DPI scale works in DIP.
+        let near = eye_offset(c, (1060.0, 15.0), 1.0).0;
+        assert!(near > 0.0 && near < 3.5);
+        assert!((eye_offset(c, (1120.0, 15.0), 2.0).0 - near).abs() < 1e-3);
+    }
 }

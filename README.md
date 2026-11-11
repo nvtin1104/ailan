@@ -16,7 +16,9 @@ A small pill sits at the top-center of the screen. Hover over it and it opens to
 - **Notch shell**
   - spring animation, hover to open
   - auto-hides while a fullscreen app or game runs
-  - tray icon: Start with Windows, minimal notch, EN/VI language
+  - one fixed behaviour, no island settings: shows the live activity (Focus › Music › today's to-dos), otherwise rests as two eyes that follow the pointer anywhere on screen
+  - starting focus or adding a task in the Hub flies an icon from the button into the island
+  - tray icon: Start with Windows, EN/VI language
 - **Clock** with date.
 - **Music** from any player through Windows SMTC (Spotify, browsers, Media Player…)
   - artwork, progress

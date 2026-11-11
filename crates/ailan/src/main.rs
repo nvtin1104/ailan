@@ -64,14 +64,13 @@ fn run(t0: Instant) -> Result<()> {
         "--expand=todo" => Some(ailan_core::settings::Tab::Todo),
         _ => None,
     });
-    // `--hub=island` / `--hub=ai` … opens a specific page; `--compact` starts in Compact mode.
+    // `--hub=todos` / `--hub=ai` … opens a specific page; `--compact` starts in Compact mode.
     let hub_page = std::env::args().find_map(|a| {
         use ailan_core::settings::HubPage;
         Some(match a.strip_prefix("--hub=")? {
             "today" => HubPage::Today,
             "todos" => HubPage::Todos,
             "reminders" => HubPage::Reminders,
-            "island" => HubPage::Island,
             "settings" => HubPage::Settings,
             "ai" => HubPage::Ai,
             _ => return None,

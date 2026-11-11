@@ -9,7 +9,7 @@ use std::time::Instant;
 use ailan_core::anim::Spring;
 use ailan_core::i18n::{t, Key};
 use ailan_core::reminder::{day_bucket, DayBucket};
-use ailan_core::settings::{HubPage, Tab};
+use ailan_core::settings::HubPage;
 use ailan_core::time::fmt_duration;
 use ailan_core::timer::Phase;
 use ailan_core::AppState;
@@ -18,7 +18,7 @@ use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::pages;
 use crate::hub::widgets::*;
 use crate::hub::{Field, HubAction, HubHit, PageCtx, TodoFilter};
-use crate::ui::{G_CHECKMARK, G_HOME, G_MUSIC, G_NEXT, G_PAUSE, G_PIN, G_PLAY, G_PREV, G_SETTINGS, G_TIMER};
+use crate::ui::{G_CHECKMARK, G_HOME, G_MUSIC, G_NEXT, G_PAUSE, G_PLAY, G_PREV, G_SETTINGS, G_TIMER};
 
 pub const COMPACT_WIDTH: i32 = 380;
 pub const COMPACT_HEIGHT: i32 = 600;
@@ -30,12 +30,11 @@ pub const SIDEBAR_W: f32 = 220.0;
 const NAV_Y0: f32 = 128.0;
 const NAV_STEP: f32 = 42.0;
 const NAV_H: f32 = 38.0;
-const DOCK_ITEM_W: f32 = 52.0;
-const DOCK_H: f32 = 56.0;
+const DOCK_H: f32 = 50.0;
 const MAX_FIELD_CHARS: usize = 200;
 
-pub const NAV_PAGES: [HubPage; 6] =
-    [HubPage::Today, HubPage::Todos, HubPage::Reminders, HubPage::Island, HubPage::Settings, HubPage::Ai];
+pub const NAV_PAGES: [HubPage; 5] =
+    [HubPage::Today, HubPage::Todos, HubPage::Reminders, HubPage::Settings, HubPage::Ai];
 
 fn nav_index(p: HubPage) -> usize {
     NAV_PAGES.iter().position(|x| *x == p).unwrap_or(0)
@@ -66,12 +65,13 @@ pub struct HubController {
     /// Collapsed reminder buckets (Overdue, Today, Tomorrow, Week, Later).
     pub collapsed: [bool; 5],
     pub hits: Vec<HubHit>,
+    /// Where the last activating input happened (hub DIP): the pressed control, or the
+    /// field that was submitted with Enter. Flights into the island start here.
+    pub last_press: Option<(f32, f32)>,
     spots: Vec<Rect>,
     over_spot: bool,
     nav: Indicator,
     filter_ind: Indicator,
-    /// Island priority rank per activity (Focus, Music, Todo).
-    prio: [Indicator; 3],
     /// Page entrance fade 0..100.
     fade: Spring,
     scroll: Spring,
@@ -102,11 +102,11 @@ impl HubController {
             todo_filter: TodoFilter::All,
             collapsed: [false; 5],
             hits: Vec::new(),
+            last_press: None,
             spots: Vec::new(),
             over_spot: false,
             nav: Indicator::new(0),
             filter_ind: Indicator::new(0),
-            prio: [Indicator::new(0), Indicator::new(1), Indicator::new(2)],
             fade: Spring::new(100.0).with(260.0, 32.0),
             scroll: Spring::new(0.0).with(520.0, 46.0),
             scroll_max: 0.0,
@@ -185,7 +185,6 @@ impl HubController {
     pub fn animating(&self) -> bool {
         !(self.nav.is_settled()
             && self.filter_ind.is_settled()
-            && self.prio.iter().all(Indicator::is_settled)
             && self.fade.is_settled()
             && self.scroll.is_settled()
             && self.pops.is_empty())
@@ -200,7 +199,6 @@ impl HubController {
         if self.reduce_motion {
             self.nav.snap();
             self.filter_ind.snap();
-            self.prio.iter_mut().for_each(Indicator::snap);
             self.fade.snap();
             self.scroll.snap();
             self.pops.clear();
@@ -208,9 +206,6 @@ impl HubController {
         }
         self.nav.step(dt);
         self.filter_ind.step(dt);
-        for p in &mut self.prio {
-            p.step(dt);
-        }
         self.fade.step(dt);
         self.scroll.step(dt);
         self.pops.retain_mut(|p| !p.step(dt));
@@ -246,6 +241,7 @@ impl HubController {
 
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> Option<HubAction> {
         let act = self.hit_at(x, y);
+        self.last_press = Some((x, y));
         let keeps_focus = matches!(act, Some(HubAction::FocusField(_) | HubAction::SubmitField(_) | HubAction::ClearSearch | HubAction::UseExample(_)));
         if !keeps_focus {
             self.focus = None;
@@ -311,7 +307,14 @@ impl HubController {
                 self.focus = None;
                 KeyOutcome::Handled
             }
-            VK_RETURN => KeyOutcome::Action(HubAction::SubmitField(f)),
+            VK_RETURN => {
+                self.last_press = self
+                    .hits
+                    .iter()
+                    .find(|h| h.action == HubAction::FocusField(f))
+                    .map(|h| h.rect.center());
+                KeyOutcome::Action(HubAction::SubmitField(f))
+            }
             _ => KeyOutcome::Handled,
         }
     }
@@ -322,11 +325,10 @@ impl HubController {
         if c.is_empty() {
             return None;
         }
-        let table: [(HubPage, &[&str]); 6] = [
+        let table: [(HubPage, &[&str]); 5] = [
             (HubPage::Today, &["today", "hôm nay", "home", "nay"]),
             (HubPage::Todos, &["todos", "tasks", "việc", "viec"]),
             (HubPage::Reminders, &["reminders", "nhắc", "nhac", "lịch"]),
-            (HubPage::Island, &["island", "đảo"]),
             (HubPage::Settings, &["settings", "cài đặt", "cai dat", "prefs"]),
             (HubPage::Ai, &["ai", "copilot", "brief"]),
         ];
@@ -339,12 +341,6 @@ impl HubController {
         self.reduce_motion = st.settings.reduce_motion;
         self.hits.clear();
         self.spots.clear();
-        for (rank, tab) in st.settings.priority.normalized_order().iter().enumerate() {
-            let ind = &mut self.prio[tab_index(*tab)];
-            if (ind.target() - rank as f32).abs() > 0.01 {
-                ind.go(rank);
-            }
-        }
         draw_window_backdrop(cv, Rect::new(0.0, 0.0, w, h));
         let counts = NavCounts::of(st, now);
         if self.is_compact {
@@ -400,8 +396,8 @@ impl HubController {
     fn draw_full(&mut self, cv: &mut Canvas, st: &AppState, now: i64, w: f32, h: f32, counts: &NavCounts) {
         let lang = st.lang();
 
-        // Sidebar: rounded on the window's left corners only, then a fading divider.
-        cv.fill_round_corners(Rect::new(0.0, 0.0, SIDEBAR_W, h), [RADIUS_WINDOW, 0.0, 0.0, RADIUS_WINDOW], BG_SIDEBAR, BG_SIDEBAR_ALPHA);
+        // Sidebar: square fill (DWM clips the window's left corners), then a fading divider.
+        cv.fill_rect(Rect::new(0.0, 0.0, SIDEBAR_W, h), BG_SIDEBAR, BG_SIDEBAR_ALPHA);
         draw_divider_v(cv, SIDEBAR_W - 1.0, 0.0, h);
 
         // Brand
@@ -413,14 +409,11 @@ impl HubController {
         cv.text("AiLan", Font::text(15.0, 700, Align::Left), Rect::new(52.0, 9.0, 140.0, 18.0), TEXT_HERO, 1.0);
         cv.text("Personal Hub", Font::text(11.0, 450, Align::Left), Rect::new(52.0, 26.0, 140.0, 14.0), TEXT_SECTION, 1.0);
 
-        // Island sync preview
+        // Island status (read-only mirror of what the notch shows)
         let isl = Rect::new(12.0, 54.0, SIDEBAR_W - 24.0, 60.0);
-        let isl_act = HubAction::SelectPage(HubPage::Island);
-        let hv = self.hover_t(isl_act);
         self.spots.push(isl);
-        draw_specular_card(cv, isl, RADIUS_CARD, hv, self.mouse);
+        draw_specular_card(cv, isl, RADIUS_CARD, 0.0, self.mouse);
         draw_island_mini(cv, st, now, isl);
-        self.push_hit(isl, isl_act);
 
         // Navigation with sliding indicator
         let ind_y = NAV_Y0 + self.nav.pos() * NAV_STEP;
@@ -472,7 +465,6 @@ impl HubController {
     }
 
     fn draw_compact(&mut self, cv: &mut Canvas, st: &AppState, now: i64, w: f32, h: f32, counts: &NavCounts) {
-        let lang = st.lang();
         let tile = Rect::new(12.0, 10.0, 24.0, 24.0);
         cv.fill_round_linear(tile, RADIUS_BUTTON, ACCENT_FILL, (tile.x, tile.y), (tile.right(), tile.bottom()), 1.0);
         cv.text("✦", Font::text(12.0, 400, Align::Center), tile, WHITE, 1.0);
@@ -481,11 +473,12 @@ impl HubController {
         let bar = Rect::new(100.0, 8.0, (w - 100.0 - 140.0).max(60.0), 28.0);
         self.draw_titlebar(cv, st, w, bar);
 
-        // Floating glass dock
+        // Floating glass dock spanning the window width (minus the 16px gutters).
         let n = NAV_PAGES.len() as f32;
         let pad = 6.0;
-        let dw = n * DOCK_ITEM_W + pad * 2.0;
-        let dock = Rect::new((w - dw) * 0.5, h - 14.0 - DOCK_H, dw, DOCK_H);
+        let dw = w - 32.0;
+        let item_w = (dw - pad * 2.0) / n;
+        let dock = Rect::new(16.0, h - 14.0 - DOCK_H, dw, DOCK_H);
         let content = Rect::new(16.0, TITLE_H + 6.0, w - 32.0, dock.y - 12.0 - (TITLE_H + 6.0));
         self.render_page(cv, st, now, content);
 
@@ -493,25 +486,26 @@ impl HubController {
         cv.fill_circle_radial(dock.x + dock.w * 0.5, dock.bottom(), dock.w * 0.6, GLOW_ACCENT, 0.18);
         draw_specular_rounded_rect(cv, dock, drad, Surface::Elevated, 0.0, self.mouse);
         let pill_rad = concentric(drad, pad);
-        let pill = Rect::new(dock.x + pad + self.nav.pos() * DOCK_ITEM_W, dock.y + pad, DOCK_ITEM_W, DOCK_H - pad * 2.0);
+        let pill = Rect::new(dock.x + pad + self.nav.pos() * item_w, dock.y + pad, item_w, DOCK_H - pad * 2.0);
         cv.fill_round_linear(pill, pill_rad, ACCENT_TINT, (pill.x, pill.y), (pill.right(), pill.bottom()), 1.0);
         cv.hairline_round_linear(pill, pill_rad, RIM_ACCENT, (pill.x, pill.y), (pill.x, pill.bottom()), 1.0);
         for (i, page) in NAV_PAGES.iter().enumerate() {
-            let ir = Rect::new(dock.x + pad + i as f32 * DOCK_ITEM_W, dock.y + pad, DOCK_ITEM_W, DOCK_H - pad * 2.0);
+            let ir = Rect::new(dock.x + pad + i as f32 * item_w, dock.y + pad, item_w, DOCK_H - pad * 2.0);
             let act = HubAction::SelectPage(*page);
             let near = 1.0 - (self.nav.pos() - i as f32).abs().min(1.0);
             let hv = self.hover_t(act);
             let fg = mix(if hv > 0.0 { TEXT_TITLE } else { TEXT_BODY }, TEXT_HERO, near);
-            let icon_r = Rect::new(ir.x, ir.y + 3.0, ir.w, 22.0);
+            // Icon-only dock: the sliding pill and icon tint carry the active state.
+            let icon_col = mix(fg, ACCENT_PRIMARY_HI, near * 0.5);
             match nav_glyph(*page) {
-                Some(g) => cv.glyph(g, 15.0, icon_r, mix(fg, ACCENT_PRIMARY_HI, near * 0.5), 1.0),
-                None => cv.text("✦", Font::text(15.0, 400, Align::Center), icon_r, mix(fg, ACCENT_PRIMARY_HI, near * 0.5), 1.0),
+                Some(g) => cv.glyph(g, 17.0, ir, icon_col, 1.0),
+                None => cv.text("✦", Font::text(17.0, 400, Align::Center), ir, icon_col, 1.0),
             }
-            cv.text(nav_label(lang, *page), Font::text(9.5, if near > 0.5 { 600 } else { 450 }, Align::Center), Rect::new(ir.x + 1.0, ir.y + 25.0, ir.w - 2.0, 14.0), fg, 0.95);
             let (cnt, rgb) = counts.for_page(*page);
             if cnt > 0 {
-                cv.fill_circle(ir.right() - 13.0, ir.y + 6.0, 3.5, rgb, 1.0);
-                cv.stroke_circle(ir.right() - 13.0, ir.y + 6.0, 4.5, 1.5, BG_SURFACE_ELEVATED, 1.0);
+                let (dx, dy) = (ir.x + ir.w * 0.5 + 10.0, ir.y + ir.h * 0.5 - 9.0);
+                cv.fill_circle(dx, dy, 3.5, rgb, 1.0);
+                cv.stroke_circle(dx, dy, 4.5, 1.5, BG_SURFACE_ELEVATED, 1.0);
             }
             self.push_hit(ir, act);
         }
@@ -575,7 +569,25 @@ impl HubController {
         let scroll = self.scroll.value;
 
         // Allow ring glows to bleed a little sideways; vertically clip under the titlebar.
-        cv.push_clip(Rect::new(r.x - 16.0, r.y - 8.0, r.w + 32.0, r.h + 16.0));
+        // Scrolled content fades out at the top edge; in Compact it also fades out above the
+        // dock (opacity mask, so the acrylic backdrop is never tinted).
+        let view = Rect::new(r.x - 16.0, r.y - 8.0, r.w + 32.0, r.h + 16.0);
+        cv.push_clip(view);
+        let fade_top = scroll > 0.5;
+        let fade_bottom = self.is_compact;
+        let layered = (fade_top || fade_bottom) && {
+            let span = view.h;
+            let edge = 22.0 / span;
+            let top = if fade_top { (0.0, edge) } else { (0.0, 0.0) };
+            let bot = if fade_bottom { (1.0 - edge, 1.0) } else { (1.0, 1.0) };
+            let g = crate::gfx::Gradient::new(&[
+                (top.0, WHITE, if fade_top { 0.0 } else { 1.0 }),
+                (top.1, WHITE, 1.0),
+                (bot.0, WHITE, 1.0),
+                (bot.1, WHITE, if fade_bottom { 0.0 } else { 1.0 }),
+            ]);
+            cv.push_fade_layer(view, g, (view.x, view.y), (view.x, view.bottom()))
+        };
         let content_h = {
             let mut ctx = PageCtx {
                 st,
@@ -586,7 +598,6 @@ impl HubController {
                 capture: &self.capture,
                 search: &self.search,
                 copilot: &self.copilot,
-                prio_pos: [self.prio[0].pos(), self.prio[1].pos(), self.prio[2].pos()],
                 filter: self.todo_filter,
                 filter_pos: self.filter_ind.pos(),
                 scroll,
@@ -601,18 +612,22 @@ impl HubController {
                 HubPage::Today => pages::today::draw(cv, &mut ctx, pr),
                 HubPage::Todos => pages::todos::draw(cv, &mut ctx, pr),
                 HubPage::Reminders => pages::reminders::draw(cv, &mut ctx, pr),
-                HubPage::Island => pages::island::draw(cv, &mut ctx, pr),
                 HubPage::Settings => pages::settings::draw(cv, st, pr, now, scroll, self.hover, ctx.hits),
                 HubPage::Ai => pages::ai::draw(cv, &mut ctx, pr),
             }
             ctx.content_h
         };
+        if layered {
+            cv.pop_layer();
+        }
         cv.pop_clip();
         cv.alpha = prev_alpha;
 
         // Scroll extent: explicit from the page, else inferred from the lowest hit target.
         let max_bottom = self.hits[first_hit..].iter().map(|h| h.rect.bottom()).fold(r.y, f32::max);
-        let full_h = content_h.unwrap_or(max_bottom + scroll - r.y + 8.0);
+        // Extra tail room in Compact so the last item can scroll clear of the dock fade.
+        let tail = if self.is_compact { 18.0 } else { 0.0 };
+        let full_h = content_h.unwrap_or(max_bottom + scroll - r.y + 8.0) + tail;
         self.scroll_max = (full_h - r.h).max(0.0);
         if self.scroll.target > self.scroll_max {
             self.scroll_to(self.scroll_max, false);
@@ -671,15 +686,6 @@ fn draw_island_mini(cv: &mut Canvas, st: &AppState, now: i64, card: Rect) {
     cv.fill_circle(card.right() - 16.0, card.y + 16.0, 3.0, dot, a);
 }
 
-/// Index of an activity in per-activity arrays (Focus, Music, Todo).
-pub fn tab_index(t: Tab) -> usize {
-    match t {
-        Tab::Focus => 0,
-        Tab::Music => 1,
-        Tab::Todo => 2,
-    }
-}
-
 fn phase_label(lang: ailan_core::i18n::Lang, phase: Phase) -> (&'static str, u32) {
     match phase {
         Phase::Focus => (t(lang, Key::Focus), ACCENT_PRIMARY_HI),
@@ -693,7 +699,6 @@ fn nav_glyph(p: HubPage) -> Option<char> {
         HubPage::Today => Some(G_HOME),
         HubPage::Todos => Some(G_CHECKMARK),
         HubPage::Reminders => Some(G_TIMER),
-        HubPage::Island => Some(G_PIN),
         HubPage::Settings => Some(G_SETTINGS),
         HubPage::Ai => None,
     }
@@ -704,7 +709,6 @@ fn nav_label(lang: ailan_core::i18n::Lang, p: HubPage) -> &'static str {
         HubPage::Today => t(lang, Key::NavToday),
         HubPage::Todos => t(lang, Key::NavTodos),
         HubPage::Reminders => t(lang, Key::NavReminders),
-        HubPage::Island => t(lang, Key::NavIsland),
         HubPage::Settings => t(lang, Key::NavSettings),
         HubPage::Ai => t(lang, Key::NavAi),
     }

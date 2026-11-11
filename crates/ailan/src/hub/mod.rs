@@ -2,14 +2,14 @@
 //!
 //! Two layouts share one controller:
 //! - **Compact Mode** (380×600): floating widget, content above a floating glass dock.
-//! - **Full Mode** (1000×680): sidebar navigation with Island sync + mini focus/media dock.
+//! - **Full Mode** (1000×680): sidebar navigation with an Island status card + mini focus/media dock.
 
 pub mod controller;
 pub mod pages;
 pub mod widgets;
 
 use ailan_core::i18n::Lang;
-use ailan_core::settings::{HubPage, NotchMode, Tab};
+use ailan_core::settings::HubPage;
 use ailan_core::AppState;
 
 use crate::gfx::{Canvas, Rect};
@@ -89,17 +89,7 @@ pub enum HubAction {
     MediaNext,
     MediaPrev,
 
-    // Island pin actions
-    PinFocus,
-    PinMedia,
-    PinTodo,
-    ToggleMinimalMode,
-    SetNotchMode(NotchMode),
-    PriorityUp(Tab),
-    PriorityDown(Tab),
-    ToggleSmartPeek,
-    /// Hover target of the Island live preview (shows the expanded state).
-    PreviewIsland,
+    // AI page
     /// Fill the AI command box with example `n`.
     UseExample(u8),
 
@@ -133,9 +123,6 @@ pub struct PageCtx<'a> {
     pub capture: &'a str,
     pub search: &'a str,
     pub copilot: &'a str,
-    /// Spring-animated rank (0..3) of each activity in the Island priority list,
-    /// indexed Focus, Music, Todo.
-    pub prio_pos: [f32; 3],
     pub filter: TodoFilter,
     /// Spring-animated fractional index of the active filter segment.
     pub filter_pos: f32,

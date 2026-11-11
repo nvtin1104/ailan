@@ -4,15 +4,13 @@ use std::sync::Arc;
 
 use crate::event::{AppEvent, Artwork, Battery, MediaInfo, Network};
 use crate::i18n::{t, Key, Lang};
-use crate::settings::{Data, NotchMode, Settings, Tab};
-use crate::time::{self, MINUTE};
+use crate::settings::{Data, Settings, Tab};
+use crate::time;
 use crate::timer::{Phase, Pomodoro};
 
 pub const OSD_MS: i64 = 1_500;
 pub const BANNER_MS: i64 = 4_000;
-pub const REMINDER_MS: i64 = 10_000;
 pub const REMINDER_BANNER_MS: i64 = 25_000;
-pub const PIN_PEEK_MS: i64 = 1_800;
 pub const SAVE_DEBOUNCE_MS: i64 = 1_000;
 pub const LOW_BATTERY: u8 = 20;
 
@@ -49,25 +47,20 @@ pub struct Banner {
     pub todo_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PinAnim {
-    pub tab: Tab,
-    pub pinned: bool,
-    pub start: i64,
-}
-
-/// What the collapsed notch is showing, in priority order.
+/// What the collapsed notch is showing, in priority order. With nothing going on the
+/// island rests in `Minimal` (the eyes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Collapsed {
     Osd,
     Banner,
-    PinPeek,
     Timer,
     Media,
     Todo,
-    Clock,
     Minimal,
 }
+
+/// Fixed activity priority: Focus always wins, then Music, then To-do.
+pub const ACTIVITY_ORDER: [Tab; 3] = [Tab::Focus, Tab::Music, Tab::Todo];
 
 /// A user-facing notification the shell should also surface outside the notch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,9 +88,6 @@ pub struct AppState {
     pub pomodoro: Pomodoro,
     pub osd: Option<Osd>,
     pub banner: Option<Banner>,
-    pub pin_anim: Option<PinAnim>,
-    /// Explicit peek deadline when Focus is manually started/resumed.
-    pub focus_peek_until: Option<i64>,
 
     save_due: Option<i64>,
     settings_dirty: bool,
@@ -121,8 +111,6 @@ impl AppState {
             pomodoro,
             osd: None,
             banner: None,
-            pin_anim: None,
-            focus_peek_until: None,
             save_due: None,
             settings_dirty: false,
             data_dirty: false,
@@ -154,10 +142,6 @@ impl AppState {
         });
     }
 
-    pub fn trigger_pin_anim(&mut self, tab: Tab, pinned: bool, now: i64) {
-        self.pin_anim = Some(PinAnim { tab, pinned, start: now });
-    }
-
     pub fn snooze_banner(&mut self, minutes: u32, now: i64) {
         if let Some(b) = &self.banner {
             if let Some(id) = b.todo_id {
@@ -178,85 +162,41 @@ impl AppState {
         self.banner = None;
     }
 
-    /// Check whether a specific activity is currently running/active on the collapsed notch.
-    pub fn is_activity_running(&self, tab: Tab) -> bool {
+    /// Whether an activity is live on the collapsed island right now.
+    /// - Focus: a session is on (running or paused).
+    /// - Music: media is playing.
+    /// - To-do: unfinished tasks remain for today.
+    pub fn is_activity_running(&self, tab: Tab, now: i64) -> bool {
         match tab {
-            Tab::Focus => self.pomodoro.is_running(),
-            // Music triggers automatically when playing
+            Tab::Focus => self.pomodoro.is_active(),
             Tab::Music => self.media.as_ref().is_some_and(|m| m.playing),
-            Tab::Todo => self.settings.pin_todo && self.data.todos.pending_count() > 0,
+            Tab::Todo => self.data.todos.today_items(now, self.offset_min).iter().any(|t| !t.done),
         }
     }
 
-    /// Whether an activity should appear as a page in the Hover (Expanded) UI:
-    /// - Music triggers automatically whenever there is an active media session or if pinned.
-    /// - Other activities (Focus, Todo) only show if they are pinned or actively running.
+    /// Whether an activity appears as a page in the Hover (Expanded) UI. To-do is always
+    /// there so a task can be typed straight into the island.
     pub fn is_activity_visible_on_hover(&self, tab: Tab) -> bool {
         match tab {
-            Tab::Music => {
-                self.media.as_ref().is_some_and(|m| m.playing || !m.title.is_empty())
-                    || self.settings.pin_music
-            }
-            Tab::Focus => self.pomodoro.is_active() || self.settings.pin_focus,
-            Tab::Todo => self.settings.pin_todo,
+            Tab::Music => self.media.as_ref().is_some_and(|m| m.playing || !m.title.is_empty()),
+            Tab::Focus => self.pomodoro.is_active(),
+            Tab::Todo => true,
         }
     }
 
-    /// Activities visible in the Hover UI, ordered by the user's priority configuration.
+    /// Activities visible in the Hover UI, in fixed priority order.
     pub fn hover_activities(&self) -> Vec<Tab> {
-        self.settings
-            .priority
-            .normalized_order()
-            .into_iter()
-            .filter(|&t| self.is_activity_visible_on_hover(t))
-            .collect()
+        ACTIVITY_ORDER.into_iter().filter(|&t| self.is_activity_visible_on_hover(t)).collect()
     }
 
-    /// Running activities ordered by the user's priority configuration.
-    pub fn running_activities(&self) -> Vec<Tab> {
-        self.settings
-            .priority
-            .normalized_order()
-            .into_iter()
-            .filter(|&t| self.is_activity_running(t))
-            .collect()
+    /// Live activities in fixed priority order.
+    pub fn running_activities(&self, now: i64) -> Vec<Tab> {
+        ACTIVITY_ORDER.into_iter().filter(|&t| self.is_activity_running(t, now)).collect()
     }
 
-    /// True when at least one activity is actively running.
-    pub fn has_running_activity(&self) -> bool {
-        self.is_activity_running(Tab::Focus)
-            || self.is_activity_running(Tab::Music)
-            || self.is_activity_running(Tab::Todo)
-    }
-
-    /// When Focus is running, returns `Some(until_ms)` if Focus is currently within its
-    /// per-minute update peek window (`peek_seconds` after each whole-minute mark or start).
-    pub fn focus_peek_deadline(&self, now: i64) -> Option<i64> {
-        if !self.pomodoro.is_running() {
-            return None;
-        }
-        let peek_ms = (self.settings.priority.peek_seconds.clamp(1, 30) as i64) * 1_000;
-        if let Some(until) = self.focus_peek_until {
-            if now < until {
-                return Some(until);
-            }
-        }
-        let rem = self.pomodoro.remaining(now);
-        if rem <= 0 {
-            return None;
-        }
-        let elapsed_since_min = (MINUTE - (rem % MINUTE)) % MINUTE;
-        if elapsed_since_min < peek_ms {
-            Some(now + (peek_ms - elapsed_since_min))
-        } else {
-            None
-        }
-    }
-
-    /// Trigger an immediate Focus peek window (e.g. when starting or toggling Focus).
-    pub fn note_focus_started(&mut self, now: i64) {
-        let peek_ms = (self.settings.priority.peek_seconds.clamp(1, 30) as i64) * 1_000;
-        self.focus_peek_until = Some(now + peek_ms);
+    /// True when at least one activity is live.
+    pub fn has_running_activity(&self, now: i64) -> bool {
+        ACTIVITY_ORDER.iter().any(|&t| self.is_activity_running(t, now))
     }
 
     /// Apply a provider event. Returns `true` if anything visible changed.
@@ -341,14 +281,7 @@ impl AppState {
         if self.banner.as_ref().is_some_and(|b| b.until <= now) {
             self.banner = None;
         }
-        if self.focus_peek_until.is_some_and(|u| u <= now) {
-            self.focus_peek_until = None;
-        }
-        if self.pin_anim.as_ref().is_some_and(|p| now - p.start >= PIN_PEEK_MS) {
-            self.pin_anim = None;
-        }
         if let Some(finished) = self.pomodoro.poll(now) {
-            self.focus_peek_until = None;
             let (icon, body) = match finished {
                 Phase::Focus => {
                     self.data.add_focus(time::local_day(now, self.offset_min));
@@ -377,22 +310,9 @@ impl AppState {
         out
     }
 
-    /// Primary activity to display according to priority and smart minute peek.
+    /// Activity the collapsed island shows: the highest-priority live one (Focus wins).
     pub fn primary_activity(&self, now: i64) -> Option<Tab> {
-        let running = self.running_activities();
-        if running.is_empty() {
-            return None;
-        }
-        if running.len() > 1 && self.settings.priority.smart_minute_peek {
-            let focus_peeking = self.focus_peek_deadline(now).is_some();
-            for &tab in &running {
-                if tab == Tab::Focus && !focus_peeking {
-                    continue;
-                }
-                return Some(tab);
-            }
-        }
-        running.first().copied()
+        self.running_activities(now).first().copied()
     }
 
     pub fn collapsed(&self, now: i64) -> Collapsed {
@@ -402,23 +322,11 @@ impl AppState {
         if self.banner.as_ref().is_some_and(|b| b.until > now) {
             return Collapsed::Banner;
         }
-        if self.pin_anim.as_ref().is_some_and(|p| now - p.start < PIN_PEEK_MS) {
-            return Collapsed::PinPeek;
-        }
-        if self.settings.minimal || self.settings.mode == NotchMode::MinimalOnly {
-            return Collapsed::Minimal;
-        }
-        if let Some(active) = self.primary_activity(now) {
-            return match active {
-                Tab::Focus => Collapsed::Timer,
-                Tab::Music => Collapsed::Media,
-                Tab::Todo => Collapsed::Todo,
-            };
-        }
-        match self.settings.mode {
-            NotchMode::DynamicWhenActive => Collapsed::Minimal,
-            NotchMode::AlwaysDynamic => Collapsed::Clock,
-            NotchMode::MinimalOnly => Collapsed::Minimal,
+        match self.primary_activity(now) {
+            Some(Tab::Focus) => Collapsed::Timer,
+            Some(Tab::Music) => Collapsed::Media,
+            Some(Tab::Todo) => Collapsed::Todo,
+            None => Collapsed::Minimal,
         }
     }
 
@@ -489,36 +397,50 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_only_when_active_and_smart_minute_peek() {
-        let mut s = state();
+    fn idle_rests_in_minimal() {
+        let s = state();
         assert_eq!(s.collapsed(0), Collapsed::Minimal);
-        assert!(s.hover_activities().is_empty());
+        assert_eq!(s.hover_activities(), vec![Tab::Todo], "to-do is always reachable on hover");
+        assert!(!s.has_running_activity(0));
+    }
 
-        // Music starts playing -> auto-triggered on collapsed & hover UI
+    #[test]
+    fn focus_always_wins_then_music_then_todo() {
+        let mut s = state();
+        // A task for today makes To-do live.
+        s.data.todos.add("write".into(), None);
+        assert_eq!(s.collapsed(0), Collapsed::Todo);
+
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
         assert_eq!(s.collapsed(0), Collapsed::Media);
-        assert_eq!(s.hover_activities(), vec![Tab::Music]);
-
-        // Pinning Todo shows Todo on Hover UI alongside Music
-        s.settings.pin_todo = true;
         assert_eq!(s.hover_activities(), vec![Tab::Music, Tab::Todo]);
 
-        // Focus starts at t=0 -> peeks for 5s (0..5_000), then yields to Media (5_000..60_000)
+        // Focus takes over for the whole session — no alternating with Music.
         s.pomodoro.start(0);
         assert_eq!(s.hover_activities(), vec![Tab::Focus, Tab::Music, Tab::Todo]);
-        assert_eq!(s.collapsed(0), Collapsed::Timer);
-        assert_eq!(s.collapsed(4_999), Collapsed::Timer);
-        assert_eq!(s.collapsed(5_000), Collapsed::Media);
-        assert_eq!(s.collapsed(59_999), Collapsed::Media);
-        assert_eq!(s.collapsed(60_000), Collapsed::Timer);
-        assert_eq!(s.collapsed(64_999), Collapsed::Timer);
-        assert_eq!(s.collapsed(65_000), Collapsed::Media);
+        for t in [0, 5_000, 30_000, 60_000, 65_000] {
+            assert_eq!(s.collapsed(t), Collapsed::Timer, "at {t}");
+        }
+        // Paused is still "focus on".
+        s.pomodoro.pause(10 * MINUTE);
+        assert_eq!(s.collapsed(10 * MINUTE), Collapsed::Timer);
 
-        s.settings.priority.smart_minute_peek = false;
-        assert_eq!(s.collapsed(10_000), Collapsed::Timer);
-
-        s.settings.priority.move_up(Tab::Music);
+        // Session reset → back to Music.
+        s.pomodoro.reset();
         assert_eq!(s.collapsed(0), Collapsed::Media);
+    }
+
+    #[test]
+    fn todo_only_live_while_today_has_unfinished_work() {
+        let mut s = state();
+        let id = s.data.todos.add("a".into(), None);
+        assert!(s.is_activity_running(Tab::Todo, 0));
+        s.data.todos.toggle(id, 0, 0);
+        assert!(!s.is_activity_running(Tab::Todo, 0));
+        // Due next week → not today.
+        s.data.todos.add("later".into(), Some(8 * time::DAY));
+        assert!(!s.is_activity_running(Tab::Todo, 0));
+        assert_eq!(s.collapsed(0), Collapsed::Minimal);
     }
 
     #[test]

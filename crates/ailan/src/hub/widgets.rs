@@ -53,7 +53,9 @@ pub const TEXT_MUTED: u32 = TEXT_BODY;
 pub const TEXT_FAINT: u32 = TEXT_SECTION;
 
 // ---- Geometry tokens -----------------------------------------------------------------
-pub const RADIUS_WINDOW: f32 = 14.0;
+/// Matches the radius DWM clips the window to (`DWMWCP_ROUND` = 8px). Drawing a larger
+/// radius leaves uncovered wedges between our curve and the OS curve at every corner.
+pub const RADIUS_WINDOW: f32 = 8.0;
 pub const RADIUS_CARD: f32 = 14.0;
 pub const RADIUS_ITEM: f32 = 10.0;
 pub const RADIUS_INPUT: f32 = 10.0;
@@ -182,7 +184,8 @@ pub fn draw_radial_spotlight(cv: &mut Canvas, r: Rect, radius: f32, mouse: (f32,
 
 /// Full-window acrylic backdrop.
 pub fn draw_window_backdrop(cv: &mut Canvas, r: Rect) {
-    cv.fill_round(r, RADIUS_WINDOW, BG_DEEP_CANVAS, BG_DEEP_CANVAS_ALPHA);
+    // Fill the full rect: DWM rounds (and anti-aliases) the window corners itself.
+    cv.fill_rect(r, BG_DEEP_CANVAS, BG_DEEP_CANVAS_ALPHA);
     cv.hairline_round_linear(r, RADIUS_WINDOW, RIM, (r.x, r.y), (r.x, r.y + r.h.min(260.0)), 1.0);
 }
 

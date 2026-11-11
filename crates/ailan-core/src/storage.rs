@@ -95,7 +95,7 @@ mod tests {
     fn roundtrip_toml_and_json() {
         let d = tmp_dir("rt");
         let mut s = Settings::default();
-        s.minimal = true;
+        s.reduce_motion = true;
         s.durations.focus_min = 50;
         save(&d.join("settings.toml"), Format::Toml, &s).unwrap();
         let (back, how): (Settings, _) = load(&d.join("settings.toml"), Format::Toml);
@@ -133,11 +133,39 @@ mod tests {
     fn partial_settings_use_defaults() {
         let d = tmp_dir("partial");
         let p = d.join("settings.toml");
-        fs::write(&p, "minimal = true\n").unwrap();
+        fs::write(&p, "reduce_motion = true\n").unwrap();
         let (s, how): (Settings, _) = load(&p, Format::Toml);
         assert_eq!(how, Loaded::Ok);
-        assert!(s.minimal);
+        assert!(s.reduce_motion);
         assert_eq!(s.durations.focus_min, 25);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn legacy_island_settings_are_ignored_not_fatal() {
+        // Files written by older versions carry island settings that no longer exist.
+        let d = tmp_dir("legacy");
+        let p = d.join("settings.toml");
+        let legacy = r#"lang = "vi"
+minimal = true
+mode = "always_dynamic"
+pin_todo = true
+
+[priority]
+order = ["music", "focus", "todo"]
+smart_minute_peek = false
+
+[minimal_ui]
+hide_when_idle = true
+
+[app_window]
+last_page = "island"
+"#;
+        fs::write(&p, legacy).unwrap();
+        let (s, how): (Settings, _) = load(&p, Format::Toml);
+        assert_eq!(how, Loaded::Ok, "must not be treated as corrupt");
+        assert_eq!(s.lang, Some(crate::i18n::Lang::Vi));
+        assert!(!d.join("settings.toml.bak").exists());
         let _ = fs::remove_dir_all(&d);
     }
 }

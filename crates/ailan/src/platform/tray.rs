@@ -27,7 +27,6 @@ pub struct Tray {
 pub enum MenuCmd {
     Settings = 1,
     Autostart,
-    Minimal,
     Language,
     About,
     Exit,
@@ -111,7 +110,6 @@ impl Tray {
             [
                 MenuCmd::Settings,
                 MenuCmd::Autostart,
-                MenuCmd::Minimal,
                 MenuCmd::Language,
                 MenuCmd::About,
                 MenuCmd::Exit,

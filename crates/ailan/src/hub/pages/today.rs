@@ -6,7 +6,6 @@
 
 use ailan_core::i18n::{short_date, t, Key};
 use ailan_core::reminder::{day_bucket, fmt_due, DayBucket};
-use ailan_core::settings::Tab;
 use ailan_core::time::{civil, fmt_duration, local_day};
 use ailan_core::timer::Phase;
 use ailan_core::todo::Todo;
@@ -15,7 +14,7 @@ use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::pages::todos::{capture_bar, todo_row};
 use crate::hub::widgets::*;
 use crate::hub::{HubAction, PageCtx};
-use crate::ui::{G_BELL, G_PAUSE, G_PIN, G_PLAY, G_RESET, G_TIMER};
+use crate::ui::{G_BELL, G_PAUSE, G_PLAY, G_RESET, G_TIMER};
 
 const GAP: f32 = 14.0;
 
@@ -142,11 +141,6 @@ fn draw_focus_hub(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, compact: bool) {
     cv.text_styled(&time, tf, Rect::new(rcx - ring_r, rcy - 13.0, ring_r * 2.0, 26.0), TEXT_HERO, 1.0, TextStyle::TABULAR);
 
     let x0 = rcx + ring_r + if compact { 18.0 } else { 26.0 };
-    let pin_act = HubAction::PinFocus;
-    let pinned = st.settings.is_pinned(Tab::Focus);
-    let pin_r = Rect::new(r.right() - pad - 30.0 + 6.0, r.y + pad - 6.0, 30.0, 30.0);
-    draw_icon_button(cv, pin_r, G_PIN, 12.0, cx.hover_t(pin_act), pinned, ACCENT_PRIMARY);
-    cx.hit(pin_r, pin_act);
 
     if !compact {
         cv.glyph(G_TIMER, 12.0, Rect::new(r.x + pad - 2.0, r.y + pad - 4.0, 18.0, 20.0), tint, 1.0);
@@ -214,7 +208,7 @@ fn draw_task_list(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     // Inset 4 so rows keep R_item = R_card − 4 (concentric).
     for (i, item) in items.iter().take(fit).enumerate() {
         let row = Rect::new(r.x + 4.0, top + i as f32 * step, r.w - 8.0, row_h);
-        todo_row(cv, cx, row, item, false, false);
+        todo_row(cv, cx, row, item, false);
     }
     if items.len() > fit && fit > 0 {
         let more = format!("+{}", items.len() - fit);

@@ -78,17 +78,22 @@ Mục tiêu thiết kế: **native thuần Rust**, **không polling**, **0% CPU 
 * Kích thước cửa sổ = kích thước mở rộng tối đa; nội dung vẽ trên swapchain trong suốt.
 * **Vùng nhận chuột** = `SetWindowRgn` theo khung pill hiện tại → phần trong suốt không chặn click của app phía dưới.
 * Hover vào pill ≥ 160 ms (hover-intent, tránh mở nhầm khi rê chuột qua thanh tab trình duyệt) → mở rộng (spring); `WM_MOUSELEAVE` → thu gọn sau 380 ms.
-* Click icon tray → mở notch 4 s; chuột phải → menu (Khởi động cùng Windows, Notch tối giản, Ngôn ngữ, Giới thiệu, Thoát).
+* Click icon tray → mở notch 4 s; chuột phải → menu (Khởi động cùng Windows, Ngôn ngữ, Giới thiệu, Thoát).
 * Ô nhập to-do: khi bấm vào, tạm bỏ `WS_EX_NOACTIVATE` và lấy focus để nhận `WM_CHAR`; mất focus/thu gọn → trả lại.
 * `WM_DPICHANGED` / `WM_DISPLAYCHANGE` → đặt lại vị trí & kích thước swapchain.
 
 ### Trạng thái hiển thị (thu gọn), theo ưu tiên
 
-1. OSD (âm lượng / độ sáng) — 1.5 s
-2. Banner (nhắc việc, sạc pin, tai nghe, hết phiên Pomodoro) — 4 s
-3. Pomodoro đang chạy — "Tập trung · 24p"
-4. Nhạc đang phát — artwork nhỏ + biểu tượng sóng nhạc
-5. Đồng hồ (hoặc pill trống nếu bật *Minimal notch*)
+Island không còn cài đặt (chế độ, ưu tiên, ghim…): thứ tự cố định.
+
+1. OSD (âm lượng / độ sáng) — 1.5 s, pill 240×34
+2. Banner (nhắc việc, sạc pin, tai nghe, hết phiên Pomodoro) — pill 1 dòng 250×34
+3. Focus đang bật (chạy hoặc tạm dừng) — luôn ưu tiên hơn nhạc
+4. Nhạc đang phát — biểu tượng sóng nhạc
+5. Việc hôm nay chưa xong — tiến độ `xong/tổng`
+6. Không có gì → đôi mắt; mắt nhìn theo con trỏ trên toàn màn hình (Raw Input, chỉ đăng ký khi đang ở trạng thái này)
+
+Bật Focus / thêm việc từ Hub: một icon bay từ nút trong Hub lên Island (cửa sổ overlay trong suốt ~0.5 s, tạo và huỷ theo từng lần bay); Island giữ trạng thái cũ đến khi icon "hạ cánh" rồi mới đổi.
 
 ### Trạng thái mở rộng
 
@@ -98,7 +103,7 @@ Hàng đầu: giờ/ngày + trạng thái (Wi-Fi, tai nghe, âm lượng, pin). 
 
 | File | Nội dung |
 |---|---|
-| `%APPDATA%\Ailan\settings.toml` | ngôn ngữ, minimal, thời lượng Pomodoro, tab mặc định |
+| `%APPDATA%\Ailan\settings.toml` | ngôn ngữ, thời lượng Pomodoro, tab mặc định, giảm chuyển động |
 | `%APPDATA%\Ailan\data.json` | to-do, số phiên tập trung trong ngày |
 | `%LOCALAPPDATA%\Ailan\logs\ailan.log` | log xoay vòng (cắt khi > 512 KB) |
 

@@ -11,7 +11,7 @@ use ailan_core::anim::Spring;
 use ailan_core::event::Artwork;
 use ailan_core::i18n::{t, Key, Lang};
 use ailan_core::scheduler::{self, View as SchedView};
-use ailan_core::settings::{NotchMode, Settings, Tab, WaveStyle};
+use ailan_core::settings::{Settings, Tab};
 use ailan_core::state::{Banner, BannerIcon, Collapsed};
 use ailan_core::storage::{self, Format};
 use ailan_core::todo::{parse_input, MAX_TEXT};
@@ -54,6 +54,10 @@ const T_AUDIO: usize = 5;
 
 const HOVER_INTENT_MS: u32 = 95;
 const COLLAPSE_DELAY_MS: u32 = 340;
+/// Flight tints (Hub accent colours) for things that jump into the island.
+const FLY_FOCUS: u32 = crate::hub::widgets::ACCENT_PRIMARY;
+const FLY_TODO: u32 = crate::hub::widgets::ACCENT_MINT;
+const FLY_REMIND: u32 = crate::hub::widgets::ACCENT_AMBER;
 const AUDIO_FRAME_MS: u32 = 30;
 const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
@@ -110,6 +114,15 @@ pub struct App {
     hover: Option<Action>,
     cursor: Option<(f32, f32)>,
     mouse_inside: bool,
+    /// Idle-eye gaze springs (DIP offsets) and whether raw mouse input is registered.
+    eye_x: Spring,
+    eye_y: Spring,
+    raw_mouse: bool,
+    /// Notch window origin on screen (px), for mapping the global cursor to the eyes.
+    origin: (i32, i32),
+    /// Hub → island flight overlay, and when the last one landed (for the glow).
+    flight: Option<crate::platform::flight::Flight>,
+    landed_at: Option<Instant>,
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
     scale: f32,
@@ -154,7 +167,7 @@ impl App {
         let sink = EventSink::new(tx, hwnd);
         let state = AppState::new(init.settings, init.data, sys::utc_offset_min());
         let mode = state.collapsed(sys::now_ms());
-        let (cw, ch) = ui::collapsed_size(&state, mode);
+        let (cw, ch) = ui::collapsed_size(mode);
 
         let media = media::spawn(sink.clone());
         let audio = Audio::new(sink.clone()).map_err(|e| log::warn!("audio: {e}")).ok();
@@ -178,9 +191,9 @@ impl App {
             settings_path: init.settings_path,
             data_path: init.data_path,
             expanded: false,
-            w: Spring::new(cw).with(380.0, 32.0),
-            h: Spring::new(ch).with(380.0, 32.0),
-            e: Spring::new(0.0).with(340.0, 30.0),
+            w: Spring::new(cw).with(380.0, 40.0),
+            h: Spring::new(ch).with(380.0, 40.0),
+            e: Spring::new(0.0).with(340.0, 37.0),
             hover_anim: Spring::new(0.0).with(620.0, 38.0),
             tab_pos: Spring::new(init_pos).with(440.0, 34.0),
             audio_bars: [0.22; 5],
@@ -195,6 +208,14 @@ impl App {
             hover: None,
             cursor: None,
             mouse_inside: false,
+            eye_x: Spring::new(0.0).with(220.0, 26.0),
+            eye_y: Spring::new(0.0).with(220.0, 26.0),
+            raw_mouse: false,
+            origin: (0, 0),
+            flight: crate::platform::flight::Flight::create()
+                .map_err(|e| log::warn!("flight overlay unavailable: {e}"))
+                .ok(),
+            landed_at: None,
             hidden: false,
             art: None,
             scale: 1.0,
@@ -223,7 +244,6 @@ impl App {
             unsafe { SetTimer(Some(hwnd), T_STATS, 60_000, None) };
         }
         if let Some(tab) = init.pin_tab {
-            app.state.settings.set_pinned(tab, true);
             app.expanded = true;
             app.tab = tab;
             app.tab_pos.value = visible_index(&app.state, tab);
@@ -252,6 +272,7 @@ impl App {
             let r = mi.rcMonitor;
             let x = r.left + (r.right - r.left - wpx) / 2;
             SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, r.top, wpx, hpx, SWP_NOACTIVATE)?;
+            self.origin = (x, r.top);
             match self.gfx.as_mut() {
                 Some(g) => g.resize(wpx as u32, hpx as u32, self.scale)?,
                 None => self.gfx = Some(Gfx::new(self.hwnd, wpx as u32, hpx as u32, self.scale)?),
@@ -375,7 +396,11 @@ impl App {
     /// Recompute targets and timers after anything changed.
     fn after_change(&mut self) {
         let now = sys::now_ms();
-        self.mode = self.state.collapsed(now);
+        // While something flies into the island, keep showing the previous state; the
+        // landing re-runs this and the island then switches to the new activity.
+        if !self.flight_active() {
+            self.mode = self.state.collapsed(now);
+        }
 
         let visible = self.state.hover_activities();
         if !visible.is_empty() && !visible.contains(&self.tab) {
@@ -385,7 +410,7 @@ impl App {
         let (tw, th) = if self.expanded {
             ui::EXPANDED
         } else {
-            ui::collapsed_size(&self.state, self.mode)
+            ui::collapsed_size(self.mode)
         };
         self.w.set_target(tw);
         self.h.set_target(th);
@@ -404,6 +429,59 @@ impl App {
         }
         self.arm_timer(now);
         self.sync_audio_timer();
+        self.sync_raw_mouse();
+    }
+
+    // ---- idle eyes follow the pointer -------------------------------------------------
+
+    /// Raw mouse input (works while the pointer is anywhere on screen) is only registered
+    /// while the idle eyes are visible, so a still or elsewhere-busy island costs nothing.
+    fn sync_raw_mouse(&mut self) {
+        use windows::Win32::UI::Input::{RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE};
+        let want = !self.hidden && !self.expanded && self.mode == Collapsed::Minimal && !self.state.settings.reduce_motion;
+        if want == self.raw_mouse {
+            return;
+        }
+        let dev = RAWINPUTDEVICE {
+            usUsagePage: 0x01, // generic desktop
+            usUsage: 0x02,     // mouse
+            dwFlags: if want { RIDEV_INPUTSINK } else { RIDEV_REMOVE },
+            hwndTarget: if want { self.hwnd } else { HWND::default() },
+        };
+        let ok = unsafe { RegisterRawInputDevices(&[dev], std::mem::size_of::<RAWINPUTDEVICE>() as u32) }.is_ok();
+        if ok {
+            self.raw_mouse = want;
+        } else {
+            log::warn!("raw mouse input (un)registration failed");
+        }
+        if want {
+            self.update_gaze();
+        } else {
+            self.eye_x.set_target(0.0);
+            self.eye_y.set_target(0.0);
+        }
+    }
+
+    /// Aim the idle eyes at the current cursor position.
+    fn update_gaze(&mut self) {
+        let mut pt = POINT::default();
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        let p = ui::pill_rect(self.w.value, self.h.value);
+        let center = (
+            self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale,
+            self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale,
+        );
+        let (dx, dy) = ui::eye_offset(center, (pt.x as f32, pt.y as f32), self.scale);
+        // Quantise so sub-pixel jitter never schedules a frame.
+        let q = |v: f32| (v * 4.0).round() / 4.0;
+        let (tx, ty) = (q(dx), q(dy));
+        if (tx - self.eye_x.target).abs() > 0.01 || (ty - self.eye_y.target).abs() > 0.01 {
+            self.eye_x.set_target(tx);
+            self.eye_y.set_target(ty);
+            self.needs_draw = true;
+        }
     }
 
     fn sync_audio_timer(&mut self) {
@@ -432,8 +510,8 @@ impl App {
 
         let smtc_playing = self.state.media.as_ref().is_some_and(|m| m.playing);
         let active_sound = smtc_playing || raw_peak > 0.012;
-        let mcfg = &self.state.settings.music_anim;
-        let gain = mcfg.gain();
+        const GAIN: f32 = 1.35;
+        let gain = GAIN;
 
         let peak = (raw_peak * gain).clamp(0.0, 1.0);
         let left = (raw_l * gain).clamp(0.0, 1.0);
@@ -443,42 +521,17 @@ impl App {
             [0.20; 5]
         } else {
             let t = (now % 60_000) as f32 * 0.001;
-            match mcfg.style {
-                WaveStyle::AudioReactive => {
-                    let floor = if peak < 0.04 { 0.32 } else { 0.14 };
-                    let e_l = left.max(peak * 0.85);
-                    let e_r = right.max(peak * 0.85);
-                    let e_m = peak.max((left + right) * 0.5);
-                    [
-                        (floor + (e_l * (0.72 + 0.28 * (t * 9.5).sin().abs())) + (1.0 - e_l) * floor * (t * 5.2).sin().abs()).clamp(0.18, 1.0),
-                        (floor + (e_l * 0.6 + e_m * 0.4) * (0.68 + 0.32 * (t * 12.3 + 1.1).sin().abs())).clamp(0.20, 1.0),
-                        (floor + e_m * (0.78 + 0.22 * (t * 14.8 + 2.2).sin().abs()) + (1.0 - e_m) * floor * (t * 6.8 + 1.5).sin().abs()).clamp(0.24, 1.0),
-                        (floor + (e_r * 0.6 + e_m * 0.4) * (0.68 + 0.32 * (t * 11.7 + 3.4).sin().abs())).clamp(0.20, 1.0),
-                        (floor + (e_r * (0.72 + 0.28 * (t * 8.9 + 4.5).sin().abs())) + (1.0 - e_r) * floor * (t * 5.7 + 2.8).sin().abs()).clamp(0.18, 1.0),
-                    ]
-                }
-                WaveStyle::SmoothWave => {
-                    let amp = (0.38 + 0.62 * peak).clamp(0.35, 1.0);
-                    let mut out = [0.22; 5];
-                    for (i, b) in out.iter_mut().enumerate() {
-                        let phase = t * 6.4 + i as f32 * 0.95;
-                        let w = 0.5 + 0.5 * phase.sin();
-                        *b = (0.18 + amp * (0.25 + 0.75 * w)).clamp(0.18, 1.0);
-                    }
-                    out
-                }
-                WaveStyle::BouncePulse => {
-                    let punch = peak.max(0.28 * (t * 7.5).sin().abs());
-                    let side = ((left + right) * 0.5).max(punch * 0.7);
-                    [
-                        (0.16 + 0.58 * side).clamp(0.16, 1.0),
-                        (0.20 + 0.78 * ((punch + side) * 0.5)).clamp(0.20, 1.0),
-                        (0.24 + 0.76 * punch).clamp(0.24, 1.0),
-                        (0.20 + 0.78 * ((punch + side) * 0.5)).clamp(0.20, 1.0),
-                        (0.16 + 0.58 * side).clamp(0.16, 1.0),
-                    ]
-                }
-            }
+            let floor = if peak < 0.04 { 0.32 } else { 0.14 };
+            let e_l = left.max(peak * 0.85);
+            let e_r = right.max(peak * 0.85);
+            let e_m = peak.max((left + right) * 0.5);
+            [
+                (floor + (e_l * (0.72 + 0.28 * (t * 9.5).sin().abs())) + (1.0 - e_l) * floor * (t * 5.2).sin().abs()).clamp(0.18, 1.0),
+                (floor + (e_l * 0.6 + e_m * 0.4) * (0.68 + 0.32 * (t * 12.3 + 1.1).sin().abs())).clamp(0.20, 1.0),
+                (floor + e_m * (0.78 + 0.22 * (t * 14.8 + 2.2).sin().abs()) + (1.0 - e_m) * floor * (t * 6.8 + 1.5).sin().abs()).clamp(0.24, 1.0),
+                (floor + (e_r * 0.6 + e_m * 0.4) * (0.68 + 0.32 * (t * 11.7 + 3.4).sin().abs())).clamp(0.20, 1.0),
+                (floor + (e_r * (0.72 + 0.28 * (t * 8.9 + 4.5).sin().abs())) + (1.0 - e_r) * floor * (t * 5.7 + 2.8).sin().abs()).clamp(0.18, 1.0),
+            ]
         };
 
         let target_peak = if active_sound { peak } else { 0.0 };
@@ -641,9 +694,7 @@ impl App {
                 let now = sys::now_ms();
                 if let Some((text, due)) = parse_input(input, now, self.state.offset_min) {
                     self.state.data.todos.add(text, due);
-                    self.state.settings.pin_todo = true;
                     self.state.mark_data_dirty(now);
-                    self.state.mark_settings_dirty(now);
                     input.clear();
                     self.after_change();
                 }
@@ -690,9 +741,6 @@ impl App {
             Action::MediaNext => self.media.send(MediaCmd::Next),
             Action::TimerToggle => {
                 self.state.pomodoro.toggle(now);
-                if self.state.pomodoro.is_running() {
-                    self.state.note_focus_started(now);
-                }
             }
             Action::TimerReset => self.state.pomodoro.reset(),
             Action::TimerSkip => self.state.pomodoro.skip(),
@@ -769,11 +817,13 @@ impl App {
                 let plan = ailan_core::command::parse_command(&self.hub_ctrl.copilot);
                 if plan.is_actionable() {
                     self.hub_ctrl.copilot.clear();
+                    let mut flight = None;
                     if !plan.title.is_empty() {
                         let due = plan.due(now, self.state.offset_min);
                         let text: String = plan.title.chars().take(MAX_TEXT).collect();
                         self.state.data.todos.add_full(text, due, false, plan.repeat, now);
                         self.state.mark_data_dirty(now);
+                        flight = Some(if due.is_some() { (ui::G_BELL, FLY_REMIND) } else { (ui::G_CHECKMARK, FLY_TODO) });
                     }
                     if let Some(m) = plan.focus_min {
                         self.state.settings.durations.focus_min = m;
@@ -784,6 +834,11 @@ impl App {
                     if plan.start_focus && !self.state.pomodoro.is_running() {
                         self.state.pomodoro.toggle(now);
                         self.tab = Tab::Focus;
+                        // Focus wins on the island, so that is what flies in.
+                        flight = Some((ui::G_TIMER, FLY_FOCUS));
+                    }
+                    if let Some((g, tint)) = flight {
+                        self.launch_flight(g, tint);
                     }
                 }
             }
@@ -793,27 +848,6 @@ impl App {
                     self.hub_ctrl.copilot = (*s).to_string();
                 }
                 self.hub_ctrl.focus = Some(Field::Copilot);
-            }
-            HubAction::PreviewIsland => {
-                self.hub_needs_draw = true;
-                return;
-            }
-            HubAction::SetNotchMode(mode) => {
-                self.state.settings.mode = mode;
-                self.state.settings.minimal = mode == NotchMode::MinimalOnly;
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::PriorityUp(tab) => {
-                self.state.settings.priority.move_up(tab);
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::PriorityDown(tab) => {
-                self.state.settings.priority.move_down(tab);
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::ToggleSmartPeek => {
-                self.state.settings.priority.smart_minute_peek = !self.state.settings.priority.smart_minute_peek;
-                self.state.mark_settings_dirty(now);
             }
             HubAction::SubmitField(f @ (Field::Capture | Field::Command)) => {
                 let input = self.hub_ctrl.take_field(f);
@@ -828,6 +862,11 @@ impl App {
                 if let Some((text, due)) = parse_input(&input, now, self.state.offset_min) {
                     self.state.data.todos.add(text, due);
                     self.state.mark_data_dirty(now);
+                    if due.is_some() {
+                        self.launch_flight(ui::G_BELL, FLY_REMIND);
+                    } else {
+                        self.launch_flight(ui::G_CHECKMARK, FLY_TODO);
+                    }
                 }
             }
             HubAction::ToggleTodo(id) | HubAction::TodoToggle(id) => {
@@ -843,6 +882,7 @@ impl App {
                 if !self.state.pomodoro.is_running() {
                     self.state.pomodoro.reset();
                     self.state.pomodoro.toggle(now);
+                    self.launch_flight(ui::G_TIMER, FLY_FOCUS);
                 }
                 self.tab = Tab::Focus;
             }
@@ -869,41 +909,14 @@ impl App {
                 self.hub_needs_draw = true;
                 return;
             }
-            HubAction::PinFocus => {
-                let will_pin = !self.state.settings.is_pinned(Tab::Focus);
-                self.state.settings.set_pinned(Tab::Focus, will_pin);
-                self.state.trigger_pin_anim(Tab::Focus, will_pin, now);
-                if will_pin {
-                    self.tab = Tab::Focus;
-                }
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::PinMedia => {
-                let will_pin = !self.state.settings.is_pinned(Tab::Music);
-                self.state.settings.set_pinned(Tab::Music, will_pin);
-                self.state.trigger_pin_anim(Tab::Music, will_pin, now);
-                if will_pin {
-                    self.tab = Tab::Music;
-                }
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::PinTodo => {
-                let will_pin = !self.state.settings.is_pinned(Tab::Todo);
-                self.state.settings.set_pinned(Tab::Todo, will_pin);
-                self.state.trigger_pin_anim(Tab::Todo, will_pin, now);
-                if will_pin {
-                    self.tab = Tab::Todo;
-                }
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::ToggleMinimalMode => {
-                self.state.settings.minimal_ui.hide_when_idle = !self.state.settings.minimal_ui.hide_when_idle;
-                self.state.mark_settings_dirty(now);
-            }
             HubAction::PomoToggle | HubAction::FocusToggle => {
+                let was_running = self.state.pomodoro.is_running();
                 self.state.pomodoro.toggle(now);
                 if self.state.pomodoro.is_running() {
                     self.tab = Tab::Focus;
+                    if !was_running {
+                        self.launch_flight(ui::G_TIMER, FLY_FOCUS);
+                    }
                 }
             }
             HubAction::PomoReset | HubAction::FocusReset => {
@@ -987,7 +1000,6 @@ impl App {
             Some(MenuItem { cmd: MenuCmd::Settings, label: t(lang, Key::OpenSettings), checked: None }),
             None,
             Some(MenuItem { cmd: MenuCmd::Autostart, label: t(lang, Key::StartWithWindows), checked: Some(autostart::is_enabled()) }),
-            Some(MenuItem { cmd: MenuCmd::Minimal, label: t(lang, Key::MinimalNotch), checked: Some(self.state.settings.minimal) }),
             Some(MenuItem { cmd: MenuCmd::Language, label: t(lang, Key::Language), checked: None }),
             None,
             Some(MenuItem { cmd: MenuCmd::About, label: t(lang, Key::About), checked: None }),
@@ -1000,15 +1012,6 @@ impl App {
                 if let Err(e) = autostart::set_enabled(!autostart::is_enabled()) {
                     log::error!("autostart: {e}");
                 }
-            }
-            Some(MenuCmd::Minimal) => {
-                self.state.settings.minimal = !self.state.settings.minimal;
-                self.state.settings.mode = if self.state.settings.minimal {
-                    NotchMode::MinimalOnly
-                } else {
-                    NotchMode::DynamicWhenActive
-                };
-                self.state.mark_settings_dirty(now);
             }
             Some(MenuCmd::Language) => {
                 self.state.settings.lang = Some(if lang == Lang::Vi { Lang::En } else { Lang::Vi });
@@ -1038,6 +1041,7 @@ impl App {
         !self.quit
             && ((!self.hidden && (self.needs_draw || !self.settled()))
                 || self.hub_needs_draw
+                || self.flight_active()
                 || (self.hub_open && self.hub_ctrl.animating()))
     }
 
@@ -1047,6 +1051,49 @@ impl App {
             && self.e.is_settled()
             && self.hover_anim.is_settled()
             && self.tab_pos.is_settled()
+            && self.eye_x.is_settled()
+            && self.eye_y.is_settled()
+            && self.glow() <= 0.0
+    }
+
+    fn flight_active(&self) -> bool {
+        self.flight.as_ref().is_some_and(|f| f.is_active())
+    }
+
+    /// Landing glow intensity (1 → 0 over 300 ms).
+    fn glow(&self) -> f32 {
+        self.landed_at.map_or(0.0, |t| (1.0 - t.elapsed().as_secs_f32() / 0.3).max(0.0))
+    }
+
+    /// Fly `glyph` from the last pressed Hub control into the island. Without a visible hub,
+    /// notch or with reduced motion the state change simply applies immediately.
+    fn launch_flight(&mut self, glyph: char, tint: u32) {
+        if self.state.settings.reduce_motion || self.hidden || !self.hub_open || self.expanded {
+            return;
+        }
+        let Some((px, py)) = self.hub_ctrl.last_press else { return };
+        let mut rc = windows::Win32::Foundation::RECT::default();
+        if unsafe { GetWindowRect(self.hub_hwnd, &mut rc) }.is_err() {
+            return;
+        }
+        let start = (rc.left as f32 + px * self.scale, rc.top as f32 + py * self.scale);
+        let p = ui::pill_rect(self.w.value, self.h.value);
+        let end = (
+            self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale,
+            self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale,
+        );
+        let scale = self.scale;
+        if let Some(f) = self.flight.as_mut() {
+            f.launch(start, end, scale, glyph, tint);
+        }
+    }
+
+    fn on_flight_landed(&mut self) {
+        // A small "gulp": brief width/height impulse on the (well-damped) size springs.
+        self.w.velocity += 320.0;
+        self.h.velocity += 80.0;
+        self.landed_at = Some(Instant::now());
+        self.after_change();
     }
 
     pub fn note_wakeup(&mut self) {
@@ -1075,8 +1122,13 @@ impl App {
             self.e.step(dt);
             self.hover_anim.step(dt);
             self.tab_pos.step(dt);
+            self.eye_x.step(dt);
+            self.eye_y.step(dt);
             self.step_audio(dt, sys::now_ms());
             let animating = !self.settled();
+            if self.glow() <= 0.0 {
+                self.landed_at = None;
+            }
             self.set_eco(!animating && !self.expanded && !self.audio_timer_on && !self.hub_open);
             self.update_region();
             self.sync_artwork();
@@ -1090,6 +1142,10 @@ impl App {
             self.hub_ctrl.advance();
             self.render_hub();
             self.hub_needs_draw = false;
+        }
+        let landed = self.flight.as_mut().is_some_and(|f| f.frame());
+        if landed {
+            self.on_flight_landed();
         }
     }
 
@@ -1133,7 +1189,8 @@ impl App {
             hover: self.hover,
             hover_t: self.hover_anim.value.clamp(0.0, 1.0),
             tab_pos: self.tab_pos.value.clamp(0.0, 2.0),
-            cursor: self.cursor,
+            eye: (self.eye_x.value, self.eye_y.value),
+            glow: self.glow(),
             audio_bars: self.audio_bars,
             audio_peak: self.audio_peak,
         };
@@ -1221,10 +1278,31 @@ impl App {
     pub fn handle_hub(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let hwnd = self.hub_hwnd;
         let (dip_w, dip_h) = self.hub_ctrl.target_size();
-        let total_w = dip_w as f32;
-        let total_h = dip_h as f32;
 
         match msg {
+            WM_NCACTIVATE => {
+                // The hub has no non-client area, but DefWindowProc would still paint the
+                // WS_THICKFRAME sizing frame into the GDI surface on (de)activation, which shows
+                // through the translucent canvas as a light ring. lParam = -1 skips that repaint
+                // while keeping normal activation behaviour.
+                return Some(unsafe { DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)) });
+            }
+            WM_NCPAINT => {
+                return Some(LRESULT(0));
+            }
+            WM_WINDOWPOSCHANGING => {
+                // Lock the window to the current layout size (blocks edge drags, Snap, maximize).
+                let wp = lparam.0 as *mut WINDOWPOS;
+                if !wp.is_null() {
+                    unsafe {
+                        if (*wp).flags.0 & SWP_NOSIZE.0 == 0 {
+                            (*wp).cx = (dip_w as f32 * self.scale).ceil() as i32;
+                            (*wp).cy = (dip_h as f32 * self.scale).ceil() as i32;
+                        }
+                    }
+                }
+                return Some(LRESULT(0));
+            }
             WM_ERASEBKGND => {
                 // The hub draws through DirectComposition; its GDI redirection surface must be
                 // transparent black or DWM treats newly exposed pixels as opaque after a resize.
@@ -1249,40 +1327,8 @@ impl App {
                 let x = pt.x as f32 / self.scale;
                 let y = pt.y as f32 / self.scale;
 
-                // 6px resize border (active in full desktop mode)
-                let border = 6.0;
-                if !self.hub_ctrl.is_compact {
-                    let on_left = x < border;
-                    let on_right = x > total_w - border;
-                    let on_top = y < border;
-                    let on_bottom = y > total_h - border;
-
-                    if on_top && on_left {
-                        return Some(LRESULT(HTTOPLEFT as isize));
-                    }
-                    if on_top && on_right {
-                        return Some(LRESULT(HTTOPRIGHT as isize));
-                    }
-                    if on_bottom && on_left {
-                        return Some(LRESULT(HTBOTTOMLEFT as isize));
-                    }
-                    if on_bottom && on_right {
-                        return Some(LRESULT(HTBOTTOMRIGHT as isize));
-                    }
-                    if on_left {
-                        return Some(LRESULT(HTLEFT as isize));
-                    }
-                    if on_right {
-                        return Some(LRESULT(HTRIGHT as isize));
-                    }
-                    if on_bottom {
-                        return Some(LRESULT(HTBOTTOM as isize));
-                    }
-                    if on_top {
-                        return Some(LRESULT(HTTOP as isize));
-                    }
-                }
-
+                // No resize borders: the hub has two fixed layouts (Compact / Full) and its
+                // swapchain is sized to them; free resizing would expose uncovered bands.
                 // Drag on the titlebar band wherever there is no interactive element.
                 if self.hub_ctrl.is_caption(x, y) {
                     return Some(LRESULT(HTCAPTION as isize));
@@ -1373,6 +1419,13 @@ impl App {
     pub fn handle(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let hwnd = self.hwnd;
         match msg {
+            WM_INPUT => {
+                if self.raw_mouse {
+                    self.update_gaze();
+                }
+                // Let DefWindowProc release the raw-input buffer.
+                return None;
+            }
             WM_NCHITTEST => {
                 // Explicitly claim client hit-test so hover & mouse events never leak through
                 // to windows underneath the notch.
@@ -1459,8 +1512,8 @@ impl App {
                 let pos = self.mouse_pos(lparam);
                 if self.cursor != Some(pos) {
                     self.cursor = Some(pos);
-                    if !self.expanded && self.mode == Collapsed::Minimal {
-                        self.needs_draw = true;
+                    if self.raw_mouse {
+                        self.update_gaze();
                     }
                 }
                 if !self.mouse_inside {

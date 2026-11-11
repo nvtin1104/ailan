@@ -11,7 +11,8 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1, ID2D1GradientStopCollection,
-    ID2D1LinearGradientBrush, ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_EXTEND_MODE_CLAMP,
+    ID2D1Brush, ID2D1Layer, ID2D1LinearGradientBrush, ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1SolidColorBrush,
+    D2D1_EXTEND_MODE_CLAMP, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
     D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES,
     ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
@@ -658,6 +659,33 @@ impl Canvas<'_> {
 
     pub fn reset_transform(&self) {
         unsafe { self.dc.SetTransform(&Matrix3x2::identity()) };
+    }
+
+    /// Start a layer whose content is faded by the alpha of gradient `g` running `from` → `to`
+    /// (an opacity mask: content fades to transparent, the backdrop stays untouched).
+    /// Must be balanced with [`Canvas::pop_layer`]. Returns false (and pushes nothing) on failure.
+    pub fn push_fade_layer(&mut self, bounds: Rect, g: Gradient, from: (f32, f32), to: (f32, f32)) -> bool {
+        let Some(brush) = self.linear(g, from, to, 1.0) else { return false };
+        let Ok(mask) = brush.cast::<ID2D1Brush>() else { return false };
+        let mut params = D2D1_LAYER_PARAMETERS1 {
+            contentBounds: bounds.d2d(),
+            geometricMask: std::mem::ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity: 1.0,
+            opacityBrush: std::mem::ManuallyDrop::new(Some(mask)),
+            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+        };
+        unsafe {
+            self.dc.PushLayer(&params, None::<&ID2D1Layer>);
+            // D2D holds its own reference while the layer is active; release ours.
+            std::mem::ManuallyDrop::drop(&mut params.opacityBrush);
+        }
+        true
+    }
+
+    pub fn pop_layer(&self) {
+        unsafe { self.dc.PopLayer() };
     }
 
     /// Fill a rect whose corners have individual radii `[top-left, top-right, bottom-right, bottom-left]`.

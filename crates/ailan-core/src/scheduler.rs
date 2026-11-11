@@ -30,16 +30,14 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
     if !view.hidden {
         add(s.osd.as_ref().map(|o| o.until));
         add(s.banner.as_ref().map(|b| b.until));
-        add(s.pin_anim.as_ref().map(|p| p.start + crate::state::PIN_PEEK_MS));
 
-        let mode = s.collapsed(now);
-        let shows_clock = (view.expanded && s.settings.hover_ui.show_clock)
-            || mode == Collapsed::Clock
-            || (mode == Collapsed::Minimal
-                && !s.settings.minimal_ui.hide_when_idle
-                && s.settings.minimal_ui.show_clock);
-        if shows_clock {
+        // Only the expanded header shows the wall clock.
+        if view.expanded {
             add(Some(time::next_minute(now)));
+        }
+        // "Today's tasks" roll over at local midnight.
+        if s.collapsed(now) == Collapsed::Todo {
+            add(Some(time::local_midnight(now, s.offset_min) + time::DAY));
         }
 
         if s.pomodoro.is_running() {
@@ -52,10 +50,6 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
                 // Collapsed shows whole minutes remaining.
                 let r = rem % time::MINUTE;
                 add(Some(now + if r == 0 { time::MINUTE } else { r }));
-                // Also wake when the 5s minute-peek window finishes so it can switch back to Music.
-                if s.settings.priority.smart_minute_peek {
-                    add(s.focus_peek_deadline(now));
-                }
             }
         }
 
@@ -70,7 +64,7 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::event::{AppEvent, MediaInfo};
-    use crate::settings::{Data, NotchMode, Settings};
+    use crate::settings::{Data, Settings};
     use crate::time::MINUTE;
 
     fn view(expanded: bool, tab: Tab) -> View {
@@ -78,27 +72,32 @@ mod tests {
     }
 
     #[test]
-    fn idle_wakes_once_per_minute_when_clock_shown() {
+    fn expanded_header_clock_ticks_each_minute() {
+        let s = AppState::new(Settings::default(), Data::default(), 0);
+        assert_eq!(next_deadline(&s, 61_000, view(true, Tab::Todo)), Some(120_000));
+    }
+
+    #[test]
+    fn todo_island_wakes_at_midnight() {
         let mut s = AppState::new(Settings::default(), Data::default(), 0);
-        s.settings.mode = NotchMode::AlwaysDynamic;
-        assert_eq!(next_deadline(&s, 61_000, view(false, Tab::Music)), Some(120_000));
+        s.data.todos.add("x".into(), None);
+        assert_eq!(next_deadline(&s, 1_000, view(false, Tab::Todo)), Some(time::DAY));
     }
 
     #[test]
     fn minimal_and_hidden_idle_never_wake() {
         let s = AppState::new(Settings::default(), Data::default(), 0);
-        // Default mode is DynamicWhenActive -> idle is Minimal with no clock -> no wakeup!
+        // Idle rests in Minimal (eyes) with no clock -> no wakeup.
         assert_eq!(next_deadline(&s, 0, view(false, Tab::Music)), None);
         assert_eq!(next_deadline(&s, 0, View { expanded: false, tab: Tab::Music, hidden: true }), None);
     }
 
     #[test]
-    fn timer_ticks_per_second_only_when_visible_and_wakes_after_peek() {
+    fn timer_ticks_per_minute_collapsed_and_per_second_expanded() {
         let mut s = AppState::new(Settings::default(), Data::default(), 0);
         s.pomodoro.start(0);
-        // At t=500ms, Focus is inside the 5_000ms peek window -> wakes at 5_000ms!
-        assert_eq!(next_deadline(&s, 500, view(false, Tab::Music)), Some(5_000));
-        // After 5_000ms (e.g. t=6_000ms), wakes at the next whole minute (60_000ms).
+        // Collapsed shows whole minutes: wake at the next minute boundary of the countdown.
+        assert_eq!(next_deadline(&s, 500, view(false, Tab::Music)), Some(MINUTE));
         assert_eq!(next_deadline(&s, 6_000, view(false, Tab::Music)), Some(MINUTE));
         // Expanded on Focus: next second.
         assert_eq!(next_deadline(&s, 500, view(true, Tab::Focus)), Some(1000));
@@ -121,7 +120,7 @@ mod tests {
             0,
         );
         assert_eq!(next_deadline(&s, 10, view(false, Tab::Music)), None);
-        assert_eq!(next_deadline(&s, 10, view(true, Tab::Music)), Some(60_000.min(1010)));
+        assert_eq!(next_deadline(&s, 10, view(true, Tab::Music)), Some(1010));
     }
 
     #[test]

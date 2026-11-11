@@ -6,6 +6,7 @@ pub mod appwindow;
 pub mod audio;
 pub mod autostart;
 pub mod brightness;
+pub mod flight;
 pub mod media;
 pub mod network;
 pub mod power;

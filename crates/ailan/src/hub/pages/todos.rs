@@ -3,13 +3,12 @@
 
 use ailan_core::i18n::{t, Key};
 use ailan_core::reminder::{day_bucket, fmt_due, DayBucket, Repeat};
-use ailan_core::settings::Tab;
 use ailan_core::todo::{due_token, Todo};
 
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::widgets::*;
 use crate::hub::{Field, HubAction, PageCtx, TodoFilter};
-use crate::ui::{G_ADD, G_PIN, G_TIMER};
+use crate::ui::{G_ADD, G_TIMER};
 
 const ROW_H: f32 = 46.0;
 const ROW_STEP: f32 = 52.0;
@@ -39,13 +38,13 @@ fn badge_colors(item: &Todo, now: i64, offset_min: i32) -> (u32, u32, f32) {
 }
 
 /// One todo row. `framed` draws its own specular card; otherwise it sits inside a parent card.
-pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, framed: bool, show_pin: bool) {
+pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, framed: bool) {
     let st = cx.st;
     let id = item.id;
     let hot = matches!(
         cx.hover,
         Some(HubAction::TodoToggle(x) | HubAction::TodoDelete(x) | HubAction::FocusOnTodo(x)) if x == id
-    ) || (show_pin && cx.hover == Some(HubAction::PinTodo) && cx.mouse.is_some_and(|(mx, my)| row.contains(mx, my)));
+    );
     let hv = if hot { 1.0 } else { 0.0 };
     if framed {
         cx.card(cv, row, RADIUS_ITEM, hv);
@@ -64,9 +63,6 @@ pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, frame
     // Hover actions (registered always so moving onto them keeps the row hot).
     let mut right = row.right() - 8.0;
     let mut actions: Vec<(HubAction, char, bool)> = vec![(HubAction::TodoDelete(id), '\u{E74D}', false)];
-    if show_pin {
-        actions.push((HubAction::PinTodo, G_PIN, st.settings.is_pinned(Tab::Todo)));
-    }
     if !item.done {
         actions.push((HubAction::FocusOnTodo(id), G_TIMER, false));
     }
@@ -229,7 +225,7 @@ pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
         if ry + ROW_H < r.y || ry > r.bottom() {
             continue;
         }
-        todo_row(cv, cx, Rect::new(r.x, ry, r.w, ROW_H), item, true, true);
+        todo_row(cv, cx, Rect::new(r.x, ry, r.w, ROW_H), item, true);
     }
     cx.content_h = Some(list_top + cx.scroll - r.y + items.len() as f32 * ROW_STEP + 8.0);
 }
