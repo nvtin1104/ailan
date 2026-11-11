@@ -1,9 +1,10 @@
-//! Ailan — a living notch for Windows.
+//! Ailan — a living notch and personal desktop hub for Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
 mod gfx;
-mod modals;
+pub mod hub;
+pub mod icon_art;
 mod platform;
 mod ui;
 
@@ -21,7 +22,6 @@ use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CON
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use app::{App, Init};
-use modals::ModalKind;
 use platform::sys;
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -36,11 +36,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
 }
 
-extern "system" fn modal_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+extern "system" fn hub_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
         if !ptr.is_null() {
-            if let Some(r) = (*ptr).handle_modal(msg, wparam, lparam) {
+            if let Some(r) = (*ptr).handle_hub(msg, wparam, lparam) {
                 return r;
             }
         }
@@ -64,15 +64,34 @@ fn run(t0: Instant) -> Result<()> {
         "--expand=todo" => Some(ailan_core::settings::Tab::Todo),
         _ => None,
     });
-    let initial_modal = std::env::args().find_map(|a| match a.as_str() {
-        "--settings" | "--hub" => Some(ModalKind::Settings),
-        _ => None,
+    // `--hub=island` / `--hub=ai` … opens a specific page; `--compact` starts in Compact mode.
+    let hub_page = std::env::args().find_map(|a| {
+        use ailan_core::settings::HubPage;
+        Some(match a.strip_prefix("--hub=")? {
+            "today" => HubPage::Today,
+            "todos" => HubPage::Todos,
+            "reminders" => HubPage::Reminders,
+            "island" => HubPage::Island,
+            "settings" => HubPage::Settings,
+            "ai" => HubPage::Ai,
+            _ => return None,
+        })
     });
+    let hub_compact = std::env::args().any(|a| a == "--compact");
+    let open_hub = hub_page.is_some()
+        || std::env::args().any(|a| matches!(a.as_str(), "--settings" | "--hub" | "--app"));
 
-    // One notch per session.
+    // One notch per session. When executed again, open the Personal Hub window.
     let _mutex = unsafe { CreateMutexW(None, true, w!("Local\\Ailan.Notch.SingleInstance"))? };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        log::info!("already running");
+        log::info!("already running; activating personal hub");
+        unsafe {
+            if let Ok(h) = FindWindowW(w!("AilanNotch"), None) {
+                if !h.is_invalid() {
+                    let _ = PostMessageW(Some(h), platform::WM_APP_SHOW_HUB, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
         return Ok(());
     }
 
@@ -99,11 +118,21 @@ fn run(t0: Instant) -> Result<()> {
     }
 
     let hwnd = create_window()?;
-    let modal_hwnd = create_modal_window()?;
+    let hub_hwnd = platform::appwindow::create_app_window(Some(hub_wndproc))?;
     let mut app = Box::new(App::new(
         hwnd,
-        modal_hwnd,
-        Init { settings, data, settings_path, data_path, stats, pin_tab, initial_modal },
+        hub_hwnd,
+        Init {
+            settings,
+            data,
+            settings_path,
+            data_path,
+            stats,
+            pin_tab,
+            open_hub,
+            hub_page,
+            hub_compact,
+        },
     )?);
     if first_run {
         app.state.mark_settings_dirty(sys::now_ms());
@@ -111,7 +140,16 @@ fn run(t0: Instant) -> Result<()> {
     let app: *mut App = Box::into_raw(app);
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as isize);
-        SetWindowLongPtrW(modal_hwnd, GWLP_USERDATA, app as isize);
+        SetWindowLongPtrW(hub_hwnd, GWLP_USERDATA, app as isize);
+        let _ = SetWindowPos(
+            hub_hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
+        );
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         (*app).frame();
     }
@@ -146,7 +184,7 @@ fn run(t0: Instant) -> Result<()> {
 
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        SetWindowLongPtrW(modal_hwnd, GWLP_USERDATA, 0);
+        SetWindowLongPtrW(hub_hwnd, GWLP_USERDATA, 0);
         drop(Box::from_raw(app));
     }
     log::info!("bye");
@@ -170,36 +208,6 @@ fn create_window() -> Result<HWND> {
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class,
             w!("Ailan"),
-            WS_POPUP,
-            0,
-            0,
-            1,
-            1,
-            None,
-            None,
-            Some(instance.into()),
-            None,
-        )
-    }
-}
-
-fn create_modal_window() -> Result<HWND> {
-    unsafe {
-        let instance = GetModuleHandleW(None)?;
-        let class = w!("AilanModal");
-        let wc = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(modal_wndproc),
-            hInstance: instance.into(),
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            lpszClassName: class,
-            ..Default::default()
-        };
-        RegisterClassExW(&wc);
-        CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            class,
-            w!("Ailan Control Hub"),
             WS_POPUP,
             0,
             0,

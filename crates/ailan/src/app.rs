@@ -20,19 +20,23 @@ use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Direct2D::ID2D1BitmapBrush1;
 use windows::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint,
-    ScreenToClient, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
+    CombineRgn, CreateRectRgn, DeleteObject, FillRect, GetMonitorInfoW, GetStockObject, MonitorFromPoint,
+    RedrawWindow, ScreenToClient, SetWindowRgn, BLACK_BRUSH, HBRUSH, HDC, MONITORINFO,
+    MONITOR_DEFAULTTOPRIMARY, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RGN_OR,
 };
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_CONTROL,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::gfx::Gfx;
-use crate::modals::{self, ModalAction, ModalHit, ModalKind, ModalView, SettingsPage};
+use crate::hub::controller::HubController;
+use crate::hub::controller::KeyOutcome;
+use crate::hub::{Field, HubAction};
+use ailan_core::settings::HubPage;
 use crate::platform::appbar::{self, AppBar, ABN_FULLSCREENAPP};
 use crate::platform::audio::Audio;
 use crate::platform::media::{self, MediaCmd, MediaControl};
@@ -75,9 +79,9 @@ struct Stats {
 
 pub struct App {
     hwnd: HWND,
-    modal_hwnd: HWND,
+    hub_hwnd: HWND,
     gfx: Option<Gfx>,
-    modal_gfx: Option<Gfx>,
+    hub_gfx: Option<Gfx>,
     pub state: AppState,
     rx: Receiver<AppEvent>,
     media: MediaControl,
@@ -118,15 +122,12 @@ pub struct App {
     taskbar_created: u32,
     pinned: bool,
 
-    // Unified Activity & Settings Hub state
-    modal_kind: Option<ModalKind>,
-    modal_page: SettingsPage,
-    modal_hits: Vec<ModalHit>,
-    modal_hover: Option<ModalAction>,
-    modal_cursor: Option<(f32, f32)>,
-    modal_mouse_inside: bool,
-    modal_todo_input: Option<String>,
-    modal_needs_draw: bool,
+    // AiLan Personal Hub application window state
+    pub hub_ctrl: HubController,
+    pub hub_open: bool,
+    hub_needs_draw: bool,
+    hub_cursor: Option<(f32, f32)>,
+    hub_mouse_inside: bool,
 
     pub quit: bool,
 }
@@ -139,12 +140,16 @@ pub struct Init {
     pub stats: bool,
     /// Debug aid: start expanded on this tab and stay open (`--expand=focus`).
     pub pin_tab: Option<Tab>,
-    /// Start with the Control Hub window open (`--settings`).
-    pub initial_modal: Option<ModalKind>,
+    /// Start with the Personal Hub window open (`--hub` or `--settings`).
+    pub open_hub: bool,
+    /// Page to open the hub on (`--hub=island`).
+    pub hub_page: Option<HubPage>,
+    /// Start the hub in Compact mode (`--compact`).
+    pub hub_compact: bool,
 }
 
 impl App {
-    pub fn new(hwnd: HWND, modal_hwnd: HWND, init: Init) -> windows::core::Result<Self> {
+    pub fn new(hwnd: HWND, hub_hwnd: HWND, init: Init) -> windows::core::Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel();
         let sink = EventSink::new(tx, hwnd);
         let state = AppState::new(init.settings, init.data, sys::utc_offset_min());
@@ -160,9 +165,9 @@ impl App {
         let init_pos = visible_index(&state, tab);
         let mut app = Self {
             hwnd,
-            modal_hwnd,
+            hub_hwnd,
             gfx: None,
-            modal_gfx: None,
+            hub_gfx: None,
             state,
             rx,
             media,
@@ -201,14 +206,11 @@ impl App {
             stats: init.stats.then(Stats::default),
             taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
             pinned: init.pin_tab.is_some(),
-            modal_kind: None,
-            modal_page: SettingsPage::default(),
-            modal_hits: Vec::new(),
-            modal_hover: None,
-            modal_cursor: None,
-            modal_mouse_inside: false,
-            modal_todo_input: None,
-            modal_needs_draw: false,
+            hub_ctrl: HubController::new(),
+            hub_open: false,
+            hub_needs_draw: false,
+            hub_cursor: None,
+            hub_mouse_inside: false,
             quit: false,
         };
         app.place()?;
@@ -226,8 +228,9 @@ impl App {
             app.tab = tab;
             app.tab_pos.value = visible_index(&app.state, tab);
         }
-        if let Some(kind) = init.initial_modal {
-            app.open_modal(kind);
+        if init.open_hub {
+            app.hub_ctrl.is_compact = init.hub_compact;
+            app.open_hub(init.hub_page);
         }
         app.after_change();
         Ok(app)
@@ -288,52 +291,77 @@ impl App {
         }
     }
 
-    // ---- auxiliary Hub / Settings window -----------------------------------------
+    // ---- AiLan Personal Hub window ----------------------------------------------
 
-    pub fn open_modal(&mut self, kind: ModalKind) {
-        let same_kind = self.modal_kind == Some(kind);
-        self.modal_kind = Some(kind);
-        let (dip_w, dip_h) = modals::window_size(kind);
-        let wpx = (dip_w * self.scale).ceil() as i32;
-        let hpx = (dip_h * self.scale).ceil() as i32;
+    pub fn open_hub(&mut self, page: Option<HubPage>) {
+        if let Some(p) = page {
+            self.hub_ctrl.select_page(p);
+        }
+        self.hub_open = true;
+        let (dip_w, dip_h) = self.hub_ctrl.target_size();
+        let wpx = (dip_w as f32 * self.scale).ceil() as i32;
+        let hpx = (dip_h as f32 * self.scale).ceil() as i32;
 
         unsafe {
             let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
             let _ = GetMonitorInfoW(mon, &mut mi);
-            let r = mi.rcMonitor;
+            let r = mi.rcWork;
             let x = r.left + (r.right - r.left - wpx) / 2;
-            let y = r.top + ((r.bottom - r.top - hpx) / 2).max(((ui::WIN_H + 16.0) * self.scale) as i32);
-            let flags = if same_kind { SWP_NOMOVE } else { SWP_SHOWWINDOW };
-            let _ = SetWindowPos(self.modal_hwnd, Some(HWND_TOPMOST), x, y, wpx, hpx, flags);
+            let y = r.top + ((r.bottom - r.top - hpx) / 2).max(40);
+            let _ = SetWindowPos(self.hub_hwnd, None, x, y, wpx, hpx, SWP_SHOWWINDOW | SWP_FRAMECHANGED);
 
-            let rad_px = (20.0 * self.scale).round() as i32 * 2;
-            let rgn = CreateRoundRectRgn(0, 0, wpx + 1, hpx + 1, rad_px, rad_px);
-            SetWindowRgn(self.modal_hwnd, Some(rgn), false);
-
-            match self.modal_gfx.as_mut() {
+            match self.hub_gfx.as_mut() {
                 Some(g) => {
                     let _ = g.resize(wpx as u32, hpx as u32, self.scale);
                 }
                 None => {
-                    self.modal_gfx = Gfx::new(self.modal_hwnd, wpx as u32, hpx as u32, self.scale).ok();
+                    self.hub_gfx = Gfx::new(self.hub_hwnd, wpx as u32, hpx as u32, self.scale).ok();
                 }
             }
-            let _ = ShowWindow(self.modal_hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.modal_hwnd);
-            let _ = SetFocus(Some(self.modal_hwnd));
+            let _ = ShowWindow(self.hub_hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(self.hub_hwnd);
+            let _ = SetFocus(Some(self.hub_hwnd));
         }
-        self.modal_needs_draw = true;
+        self.hub_needs_draw = true;
     }
 
-    pub fn close_modal(&mut self) {
-        if self.modal_kind.take().is_some() {
-            self.modal_todo_input = None;
-            self.modal_hover = None;
-            self.modal_cursor = None;
-            unsafe {
-                let _ = ShowWindow(self.modal_hwnd, SW_HIDE);
+    pub fn resize_hub(&mut self, dip_w: i32, dip_h: i32) {
+        let wpx = (dip_w as f32 * self.scale).ceil() as i32;
+        let hpx = (dip_h as f32 * self.scale).ceil() as i32;
+        unsafe {
+            let mut rc = windows::Win32::Foundation::RECT::default();
+            let _ = GetWindowRect(self.hub_hwnd, &mut rc);
+            let cx = rc.left + (rc.right - rc.left) / 2;
+            let cy = rc.top + (rc.bottom - rc.top) / 2;
+            let nx = cx - wpx / 2;
+            let ny = cy - hpx / 2;
+            let _ = SetWindowPos(self.hub_hwnd, None, nx, ny, wpx, hpx, SWP_NOZORDER | SWP_FRAMECHANGED);
+            // Clear the newly exposed GDI redirection surface (see WM_ERASEBKGND) so the
+            // acrylic backdrop shows through the whole window after growing.
+            let _ = RedrawWindow(Some(self.hub_hwnd), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+            if let Some(g) = self.hub_gfx.as_mut() {
+                let _ = g.resize(wpx as u32, hpx as u32, self.scale);
             }
+        }
+        self.hub_needs_draw = true;
+    }
+
+    pub fn close_hub(&mut self) {
+        if self.hub_open {
+            self.hub_open = false;
+            self.hub_ctrl.focus = None;
+            self.hub_ctrl.on_mouse_leave();
+            self.hub_cursor = None;
+            unsafe {
+                let _ = ShowWindow(self.hub_hwnd, SW_HIDE);
+            }
+            // Drop the whole D3D/D2D/DComp stack (brushes, gradients, text formats) while
+            // hidden; it is rebuilt on the next open.
+            self.hub_gfx = None;
             self.save(true);
         }
     }
@@ -371,8 +399,8 @@ impl App {
             self.tab_pos.snap();
         }
         self.needs_draw = true;
-        if self.modal_kind.is_some() {
-            self.modal_needs_draw = true;
+        if self.hub_open {
+            self.hub_needs_draw = true;
         }
         self.arm_timer(now);
         self.sync_audio_timer();
@@ -656,7 +684,7 @@ impl App {
             Action::Tab(t) => self.select_tab(t),
             Action::SlidePrev => self.slide_activity(-1),
             Action::SlideNext => self.slide_activity(1),
-            Action::OpenSettings => self.open_modal(ModalKind::Settings),
+            Action::OpenSettings => self.open_hub(Some(HubPage::Settings)),
             Action::MediaPrev => self.media.send(MediaCmd::Previous),
             Action::MediaToggle => self.media.send(MediaCmd::TogglePlayPause),
             Action::MediaNext => self.media.send(MediaCmd::Next),
@@ -670,7 +698,7 @@ impl App {
             Action::TimerSkip => self.state.pomodoro.skip(),
             Action::TodoInput => self.begin_editing(),
             Action::TodoToggle(id) => {
-                self.state.data.todos.toggle(id);
+                self.state.data.todos.toggle(id, now, self.state.offset_min);
                 self.state.mark_data_dirty(now);
             }
             Action::TodoDelete(id) => {
@@ -679,6 +707,12 @@ impl App {
                 self.todo_scroll = self.todo_scroll.min(ui::max_todo_scroll(&self.state));
             }
             Action::TodoScroll => {}
+            Action::SnoozeBanner(mins) => {
+                self.state.snooze_banner(mins, now);
+            }
+            Action::CompleteBanner => {
+                self.state.complete_banner(now);
+            }
         }
         if !matches!(action, Action::TodoInput) && self.input.as_deref().is_some_and(str::is_empty) {
             self.stop_editing();
@@ -686,194 +720,229 @@ impl App {
         self.after_change();
     }
 
-    fn on_modal_action(&mut self, action: ModalAction) {
+    fn on_hub_action(&mut self, action: HubAction) {
         let now = sys::now_ms();
         match action {
-            ModalAction::Close => {
-                self.close_modal();
+            HubAction::Close => {
+                self.close_hub();
                 return;
             }
-            ModalAction::DragHeader => unsafe {
-                let _ = ReleaseCapture();
-                SendMessageW(self.modal_hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
+            HubAction::Minimize => unsafe {
+                let _ = ShowWindow(self.hub_hwnd, SW_MINIMIZE);
                 return;
             },
-            ModalAction::SelectPage(page) => {
-                self.modal_page = page;
-                self.modal_needs_draw = true;
+            HubAction::ToggleMode => {
+                let (w, h) = self.hub_ctrl.toggle_mode();
+                self.resize_hub(w, h);
                 return;
             }
-            ModalAction::TogglePin(tab) => {
-                self.state.settings.toggle_pinned(tab);
-                if self.state.settings.is_pinned(tab) {
-                    self.tab = tab;
-                    self.state.settings.tab = tab;
-                }
-                self.state.mark_settings_dirty(now);
+            HubAction::SelectPage(page) => {
+                self.hub_ctrl.select_page(page);
+                self.hub_needs_draw = true;
+                return;
             }
-            ModalAction::PriorityUp(tab) => {
-                self.state.settings.priority.move_up(tab);
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::PriorityDown(tab) => {
-                self.state.settings.priority.move_down(tab);
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleSmartPeek => {
-                self.state.settings.priority.smart_minute_peek = !self.state.settings.priority.smart_minute_peek;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::QuickFocusPreset(mins) => {
-                self.state.settings.durations.focus_min = mins;
-                self.state.pomodoro.durations.focus_min = mins;
-                self.state.pomodoro.reset();
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::FocusToggle => {
-                self.state.pomodoro.toggle(now);
-                if self.state.pomodoro.is_running() {
-                    self.state.note_focus_started(now);
-                    self.tab = Tab::Focus;
-                }
-            }
-            ModalAction::FocusReset => {
-                self.state.pomodoro.reset();
-            }
-            ModalAction::MediaPrev => self.media.send(MediaCmd::Previous),
-            ModalAction::MediaToggle => self.media.send(MediaCmd::TogglePlayPause),
-            ModalAction::MediaNext => self.media.send(MediaCmd::Next),
-            ModalAction::FocusTodoInput => {
-                if self.modal_todo_input.is_none() {
-                    self.modal_todo_input = Some(String::new());
-                }
+            HubAction::FocusField(f) => {
+                self.hub_ctrl.focus = Some(f);
                 unsafe {
-                    let _ = SetForegroundWindow(self.modal_hwnd);
-                    let _ = SetFocus(Some(self.modal_hwnd));
+                    let _ = SetForegroundWindow(self.hub_hwnd);
+                    let _ = SetFocus(Some(self.hub_hwnd));
                 }
             }
-            ModalAction::SubmitTodoInput => {
-                if let Some(input) = self.modal_todo_input.as_mut() {
-                    if let Some((text, due)) = parse_input(input, now, self.state.offset_min) {
-                        self.state.data.todos.add(text, due);
-                        self.state.settings.pin_todo = true;
-                        self.tab = Tab::Todo;
+            HubAction::StartAddTodo | HubAction::FocusTodoInput => {
+                return self.on_hub_action(HubAction::FocusField(Field::Capture));
+            }
+            HubAction::CancelAddTodo => {
+                self.hub_ctrl.capture.clear();
+                self.hub_ctrl.focus = None;
+            }
+            HubAction::ClearSearch => {
+                self.hub_ctrl.search.clear();
+                self.hub_ctrl.focus = Some(Field::Search);
+            }
+            HubAction::SubmitAddTodo | HubAction::SubmitTodoInput => {
+                return self.on_hub_action(HubAction::SubmitField(Field::Capture));
+            }
+            HubAction::SubmitField(Field::Search) => {
+                self.hub_ctrl.focus = None;
+            }
+            HubAction::SubmitField(Field::Copilot) => {
+                let plan = ailan_core::command::parse_command(&self.hub_ctrl.copilot);
+                if plan.is_actionable() {
+                    self.hub_ctrl.copilot.clear();
+                    if !plan.title.is_empty() {
+                        let due = plan.due(now, self.state.offset_min);
+                        let text: String = plan.title.chars().take(MAX_TEXT).collect();
+                        self.state.data.todos.add_full(text, due, false, plan.repeat, now);
                         self.state.mark_data_dirty(now);
+                    }
+                    if let Some(m) = plan.focus_min {
+                        self.state.settings.durations.focus_min = m;
+                        let d = self.state.settings.durations;
+                        self.state.pomodoro.set_durations(d);
                         self.state.mark_settings_dirty(now);
-                        input.clear();
+                    }
+                    if plan.start_focus && !self.state.pomodoro.is_running() {
+                        self.state.pomodoro.toggle(now);
+                        self.tab = Tab::Focus;
                     }
                 }
             }
-            ModalAction::TodoToggle(id) => {
-                self.state.data.todos.toggle(id);
-                self.state.mark_data_dirty(now);
+            HubAction::UseExample(i) => {
+                let ex = crate::hub::pages::ai::examples(self.state.lang());
+                if let Some(s) = ex.get(i as usize) {
+                    self.hub_ctrl.copilot = (*s).to_string();
+                }
+                self.hub_ctrl.focus = Some(Field::Copilot);
             }
-            ModalAction::TodoDelete(id) => {
-                self.state.data.todos.remove(id);
-                self.state.mark_data_dirty(now);
+            HubAction::PreviewIsland => {
+                self.hub_needs_draw = true;
+                return;
             }
-            ModalAction::SetLang(lang) => {
-                self.state.settings.lang = Some(lang);
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::SetMode(mode) => {
+            HubAction::SetNotchMode(mode) => {
                 self.state.settings.mode = mode;
                 self.state.settings.minimal = mode == NotchMode::MinimalOnly;
                 self.state.mark_settings_dirty(now);
             }
-            ModalAction::ToggleAutostart => {
+            HubAction::PriorityUp(tab) => {
+                self.state.settings.priority.move_up(tab);
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::PriorityDown(tab) => {
+                self.state.settings.priority.move_down(tab);
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::ToggleSmartPeek => {
+                self.state.settings.priority.smart_minute_peek = !self.state.settings.priority.smart_minute_peek;
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::SubmitField(f @ (Field::Capture | Field::Command)) => {
+                let input = self.hub_ctrl.take_field(f);
+                if f == Field::Command {
+                    self.hub_ctrl.focus = None;
+                    if let Some(page) = crate::hub::controller::HubController::command_page(&input) {
+                        self.hub_ctrl.select_page(page);
+                        self.hub_needs_draw = true;
+                        return;
+                    }
+                }
+                if let Some((text, due)) = parse_input(&input, now, self.state.offset_min) {
+                    self.state.data.todos.add(text, due);
+                    self.state.mark_data_dirty(now);
+                }
+            }
+            HubAction::ToggleTodo(id) | HubAction::TodoToggle(id) => {
+                let was_done = self.state.data.todos.items.iter().find(|t| t.id == id).map(|t| t.done);
+                self.state.data.todos.toggle(id, now, self.state.offset_min);
+                // Repeating items stay pending but advance; still give the tactile pop.
+                if was_done == Some(false) {
+                    self.hub_ctrl.note_toggled(id, true);
+                }
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::FocusOnTodo(_id) => {
+                if !self.state.pomodoro.is_running() {
+                    self.state.pomodoro.reset();
+                    self.state.pomodoro.toggle(now);
+                }
+                self.tab = Tab::Focus;
+            }
+            HubAction::ToggleBucket(i) => {
+                if let Some(c) = self.hub_ctrl.collapsed.get_mut(i as usize) {
+                    *c = !*c;
+                }
+                self.hub_needs_draw = true;
+                return;
+            }
+            HubAction::PomoSkip => {
+                self.state.pomodoro.skip();
+            }
+            HubAction::DeleteTodo(id) | HubAction::TodoDelete(id) => {
+                self.state.data.todos.remove(id);
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::SnoozeTodo(id, mins) => {
+                self.state.data.todos.snooze(id, now, mins);
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::SetTodoFilter(filter) => {
+                self.hub_ctrl.set_filter(filter);
+                self.hub_needs_draw = true;
+                return;
+            }
+            HubAction::PinFocus => {
+                let will_pin = !self.state.settings.is_pinned(Tab::Focus);
+                self.state.settings.set_pinned(Tab::Focus, will_pin);
+                self.state.trigger_pin_anim(Tab::Focus, will_pin, now);
+                if will_pin {
+                    self.tab = Tab::Focus;
+                }
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::PinMedia => {
+                let will_pin = !self.state.settings.is_pinned(Tab::Music);
+                self.state.settings.set_pinned(Tab::Music, will_pin);
+                self.state.trigger_pin_anim(Tab::Music, will_pin, now);
+                if will_pin {
+                    self.tab = Tab::Music;
+                }
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::PinTodo => {
+                let will_pin = !self.state.settings.is_pinned(Tab::Todo);
+                self.state.settings.set_pinned(Tab::Todo, will_pin);
+                self.state.trigger_pin_anim(Tab::Todo, will_pin, now);
+                if will_pin {
+                    self.tab = Tab::Todo;
+                }
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::ToggleMinimalMode => {
+                self.state.settings.minimal_ui.hide_when_idle = !self.state.settings.minimal_ui.hide_when_idle;
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::PomoToggle | HubAction::FocusToggle => {
+                self.state.pomodoro.toggle(now);
+                if self.state.pomodoro.is_running() {
+                    self.tab = Tab::Focus;
+                }
+            }
+            HubAction::PomoReset | HubAction::FocusReset => {
+                self.state.pomodoro.reset();
+            }
+            HubAction::SetPomoWork(min) => {
+                self.state.settings.durations.focus_min = min as u32;
+                self.state.pomodoro.durations.focus_min = min as u32;
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::SetPomoBreak(min) => {
+                self.state.settings.durations.short_min = min as u32;
+                self.state.pomodoro.durations.short_min = min as u32;
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::MediaPlayPause | HubAction::MediaToggle => {
+                self.media.send(MediaCmd::TogglePlayPause);
+            }
+            HubAction::MediaNext => {
+                self.media.send(MediaCmd::Next);
+            }
+            HubAction::MediaPrev => {
+                self.media.send(MediaCmd::Previous);
+            }
+            HubAction::SetLanguage(lang) => {
+                self.state.settings.lang = Some(lang);
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::ToggleAutostart => {
                 if let Err(e) = autostart::set_enabled(!autostart::is_enabled()) {
                     log::error!("autostart: {e}");
                 }
             }
-            ModalAction::ToggleReduceMotion => {
+            HubAction::ToggleReduceMotion => {
                 self.state.settings.reduce_motion = !self.state.settings.reduce_motion;
                 self.state.mark_settings_dirty(now);
             }
-            ModalAction::ToggleMinimalHide => {
-                self.state.settings.minimal_ui.hide_when_idle = !self.state.settings.minimal_ui.hide_when_idle;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleMinimalDot => {
-                self.state.settings.minimal_ui.show_dot = !self.state.settings.minimal_ui.show_dot;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleMinimalClock => {
-                self.state.settings.minimal_ui.show_clock = !self.state.settings.minimal_ui.show_clock;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleMinimalDate => {
-                self.state.settings.minimal_ui.show_date = !self.state.settings.minimal_ui.show_date;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleMinimalBattery => {
-                self.state.settings.minimal_ui.show_battery = !self.state.settings.minimal_ui.show_battery;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleFocusIcon => {
-                self.state.settings.collapsed_ui.focus_show_icon = !self.state.settings.collapsed_ui.focus_show_icon;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleFocusTime => {
-                self.state.settings.collapsed_ui.focus_show_time = !self.state.settings.collapsed_ui.focus_show_time;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleMediaArt => {
-                self.state.settings.collapsed_ui.media_show_art = !self.state.settings.collapsed_ui.media_show_art;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleMediaEq => {
-                self.state.settings.collapsed_ui.media_show_eq = !self.state.settings.collapsed_ui.media_show_eq;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleTodoIcon => {
-                self.state.settings.collapsed_ui.todo_show_icon = !self.state.settings.collapsed_ui.todo_show_icon;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleTodoCount => {
-                self.state.settings.collapsed_ui.todo_show_count = !self.state.settings.collapsed_ui.todo_show_count;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverClock => {
-                self.state.settings.hover_ui.show_clock = !self.state.settings.hover_ui.show_clock;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverDate => {
-                self.state.settings.hover_ui.show_date = !self.state.settings.hover_ui.show_date;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverBattery => {
-                self.state.settings.hover_ui.show_battery = !self.state.settings.hover_ui.show_battery;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverWifi => {
-                self.state.settings.hover_ui.show_wifi = !self.state.settings.hover_ui.show_wifi;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverHeadphones => {
-                self.state.settings.hover_ui.show_headphones = !self.state.settings.hover_ui.show_headphones;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleHoverSlide => {
-                self.state.settings.hover_ui.show_slide_controls = !self.state.settings.hover_ui.show_slide_controls;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::SetWaveStyle(style) => {
-                self.state.settings.music_anim.style = style;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::SetWaveColor(color) => {
-                self.state.settings.music_anim.color = color;
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::SetWaveSensitivity(lvl) => {
-                self.state.settings.music_anim.sensitivity = lvl.clamp(1, 4);
-                self.state.mark_settings_dirty(now);
-            }
-            ModalAction::ToggleArtPulse => {
-                self.state.settings.music_anim.art_pulse = !self.state.settings.music_anim.art_pulse;
-                self.state.mark_settings_dirty(now);
-            }
         }
+        self.hub_needs_draw = true;
         self.after_change();
     }
 
@@ -926,7 +995,7 @@ impl App {
         ];
         let now = sys::now_ms();
         match self.tray.menu(&items) {
-            Some(MenuCmd::Settings) => self.open_modal(ModalKind::Settings),
+            Some(MenuCmd::Settings) => self.open_hub(None),
             Some(MenuCmd::Autostart) => {
                 if let Err(e) = autostart::set_enabled(!autostart::is_enabled()) {
                     log::error!("autostart: {e}");
@@ -951,6 +1020,7 @@ impl App {
                     title: format!("Ailan {}", env!("CARGO_PKG_VERSION")),
                     body: "A living monochrome notch for Windows · native Rust".into(),
                     until: now + 5_000,
+                    todo_id: None,
                 });
             }
             Some(MenuCmd::Exit) => unsafe {
@@ -965,7 +1035,10 @@ impl App {
     // ---- frame loop ----------------------------------------------------------------
 
     pub fn wants_frame(&self) -> bool {
-        !self.quit && (!self.hidden && (self.needs_draw || !self.settled()) || self.modal_needs_draw)
+        !self.quit
+            && ((!self.hidden && (self.needs_draw || !self.settled()))
+                || self.hub_needs_draw
+                || (self.hub_open && self.hub_ctrl.animating()))
     }
 
     fn settled(&self) -> bool {
@@ -1004,7 +1077,7 @@ impl App {
             self.tab_pos.step(dt);
             self.step_audio(dt, sys::now_ms());
             let animating = !self.settled();
-            self.set_eco(!animating && !self.expanded && !self.audio_timer_on && self.modal_kind.is_none());
+            self.set_eco(!animating && !self.expanded && !self.audio_timer_on && !self.hub_open);
             self.update_region();
             self.sync_artwork();
             self.render();
@@ -1013,9 +1086,10 @@ impl App {
                 s.frames += 1;
             }
         }
-        if self.modal_needs_draw {
-            self.render_modal();
-            self.modal_needs_draw = false;
+        if self.hub_open && (self.hub_needs_draw || self.hub_ctrl.animating()) {
+            self.hub_ctrl.advance();
+            self.render_hub();
+            self.hub_needs_draw = false;
         }
     }
 
@@ -1080,20 +1154,24 @@ impl App {
         }
     }
 
-    fn render_modal(&mut self) {
-        let Some(kind) = self.modal_kind else { return };
-        let view = ModalView {
-            kind,
-            page: self.modal_page,
-            hover: self.modal_hover,
-            todo_input: self.modal_todo_input.as_deref(),
-        };
+    fn render_hub(&mut self) {
+        if !self.hub_open {
+            return;
+        }
+        let (dip_w, dip_h) = self.hub_ctrl.target_size();
+        let now = sys::now_ms();
         let state = &self.state;
-        let mut hits = Vec::new();
-        if let Some(g) = self.modal_gfx.as_mut() {
-            if g.draw(|cv| hits = modals::draw_modal(cv, state, &view)).is_ok() {
-                self.modal_hits = hits;
-            }
+        let ctrl = &mut self.hub_ctrl;
+        let result = match self.hub_gfx.as_mut() {
+            Some(g) => g.draw(|cv| ctrl.draw(cv, state, now, dip_w as f32, dip_h as f32)),
+            None => return,
+        };
+        if let Err(e) = result {
+            log::warn!("hub render failed ({e}); recreating device");
+            let wpx = (dip_w as f32 * self.scale).ceil() as u32;
+            let hpx = (dip_h as f32 * self.scale).ceil() as u32;
+            self.hub_gfx = Gfx::new(self.hub_hwnd, wpx, hpx, self.scale).ok();
+            self.hub_needs_draw = true;
         }
     }
 
@@ -1126,54 +1204,105 @@ impl App {
         }
     }
 
-    fn cursor_icon_modal(&self, x: f32, y: f32) -> ui::CursorIcon {
-        match modals::hit_test_modal(&self.modal_hits, x, y) {
-            Some(action) => action.cursor_icon(),
-            None => ui::CursorIcon::Default,
-        }
-    }
-
-    fn update_modal_cursor(&self) {
-        if let Some((x, y)) = self.modal_cursor {
-            apply_cursor_icon(self.cursor_icon_modal(x, y));
-        } else {
-            apply_cursor_icon(ui::CursorIcon::Default);
-        }
-    }
-
     fn mouse_pos(&self, lparam: LPARAM) -> (f32, f32) {
         let x = (lparam.0 & 0xFFFF) as i16 as f32 / self.scale;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / self.scale;
         (x, y)
     }
 
-    pub fn handle_modal(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
-        let hwnd = self.modal_hwnd;
+    fn cursor_icon_hub(&self) -> ui::CursorIcon {
+        match self.hub_ctrl.hover {
+            Some(act) if act.is_text_target() => ui::CursorIcon::Text,
+            Some(_) => ui::CursorIcon::Pointer,
+            None => ui::CursorIcon::Default,
+        }
+    }
+
+    pub fn handle_hub(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
+        let hwnd = self.hub_hwnd;
+        let (dip_w, dip_h) = self.hub_ctrl.target_size();
+        let total_w = dip_w as f32;
+        let total_h = dip_h as f32;
+
         match msg {
+            WM_ERASEBKGND => {
+                // The hub draws through DirectComposition; its GDI redirection surface must be
+                // transparent black or DWM treats newly exposed pixels as opaque after a resize.
+                unsafe {
+                    let mut rc = windows::Win32::Foundation::RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    FillRect(HDC(wparam.0 as _), &rc, HBRUSH(GetStockObject(BLACK_BRUSH).0));
+                }
+                return Some(LRESULT(1));
+            }
+            WM_NCCALCSIZE => {
+                // Return 0 for both wParam == 0 and wParam != 0 so client area fills
+                // the entire window frame without Windows default non-client borders.
+                return Some(LRESULT(0));
+            }
             WM_NCHITTEST => {
+                let mut pt = POINT::default();
+                unsafe {
+                    let _ = GetCursorPos(&mut pt);
+                    let _ = ScreenToClient(hwnd, &mut pt);
+                }
+                let x = pt.x as f32 / self.scale;
+                let y = pt.y as f32 / self.scale;
+
+                // 6px resize border (active in full desktop mode)
+                let border = 6.0;
+                if !self.hub_ctrl.is_compact {
+                    let on_left = x < border;
+                    let on_right = x > total_w - border;
+                    let on_top = y < border;
+                    let on_bottom = y > total_h - border;
+
+                    if on_top && on_left {
+                        return Some(LRESULT(HTTOPLEFT as isize));
+                    }
+                    if on_top && on_right {
+                        return Some(LRESULT(HTTOPRIGHT as isize));
+                    }
+                    if on_bottom && on_left {
+                        return Some(LRESULT(HTBOTTOMLEFT as isize));
+                    }
+                    if on_bottom && on_right {
+                        return Some(LRESULT(HTBOTTOMRIGHT as isize));
+                    }
+                    if on_left {
+                        return Some(LRESULT(HTLEFT as isize));
+                    }
+                    if on_right {
+                        return Some(LRESULT(HTRIGHT as isize));
+                    }
+                    if on_bottom {
+                        return Some(LRESULT(HTBOTTOM as isize));
+                    }
+                    if on_top {
+                        return Some(LRESULT(HTTOP as isize));
+                    }
+                }
+
+                // Drag on the titlebar band wherever there is no interactive element.
+                if self.hub_ctrl.is_caption(x, y) {
+                    return Some(LRESULT(HTCAPTION as isize));
+                }
                 return Some(LRESULT(HTCLIENT as isize));
             }
             WM_SETCURSOR => {
                 let hit_test = (lparam.0 & 0xFFFF) as u32;
                 if hit_test == HTCLIENT {
-                    let mut pt = POINT::default();
-                    unsafe {
-                        let _ = GetCursorPos(&mut pt);
-                        let _ = ScreenToClient(hwnd, &mut pt);
-                    }
-                    let x = pt.x as f32 / self.scale;
-                    let y = pt.y as f32 / self.scale;
-                    apply_cursor_icon(self.cursor_icon_modal(x, y));
+                    apply_cursor_icon(self.cursor_icon_hub());
                     return Some(LRESULT(1));
                 }
             }
             WM_MOUSEMOVE => {
                 let pos = self.mouse_pos(lparam);
-                if self.modal_cursor != Some(pos) {
-                    self.modal_cursor = Some(pos);
+                if self.hub_cursor != Some(pos) {
+                    self.hub_cursor = Some(pos);
                 }
-                if !self.modal_mouse_inside {
-                    self.modal_mouse_inside = true;
+                if !self.hub_mouse_inside {
+                    self.hub_mouse_inside = true;
                     let mut tme = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -1184,67 +1313,57 @@ impl App {
                         let _ = TrackMouseEvent(&mut tme);
                     }
                 }
-                let hover = modals::hit_test_modal(&self.modal_hits, pos.0, pos.1);
-                apply_cursor_icon(match hover {
-                    Some(act) => act.cursor_icon(),
-                    None => ui::CursorIcon::Default,
-                });
-                if hover != self.modal_hover {
-                    self.modal_hover = hover;
-                    self.modal_needs_draw = true;
+                if self.hub_ctrl.on_mouse_move(pos.0, pos.1) {
+                    self.hub_needs_draw = true;
                 }
+                apply_cursor_icon(self.cursor_icon_hub());
             }
             WM_MOUSELEAVE => {
-                self.modal_mouse_inside = false;
-                self.modal_cursor = None;
-                self.modal_hover = None;
-                self.modal_needs_draw = true;
+                self.hub_mouse_inside = false;
+                self.hub_cursor = None;
+                self.hub_ctrl.on_mouse_leave();
+                self.hub_needs_draw = true;
                 apply_cursor_icon(ui::CursorIcon::Default);
             }
             WM_LBUTTONDOWN => {
                 let (x, y) = self.mouse_pos(lparam);
-                if let Some(act) = modals::hit_test_modal(&self.modal_hits, x, y) {
-                    self.on_modal_action(act);
-                } else {
-                    self.modal_todo_input = None;
-                    self.modal_needs_draw = true;
+                let had_focus = self.hub_ctrl.focus.is_some();
+                match self.hub_ctrl.on_mouse_down(x, y) {
+                    Some(act) => self.on_hub_action(act),
+                    None if had_focus => self.hub_needs_draw = true,
+                    None => {}
                 }
-                self.update_modal_cursor();
+                apply_cursor_icon(self.cursor_icon_hub());
+            }
+            WM_MOUSEWHEEL => {
+                let delta = ((wparam.0 >> 16) & 0xFFFF) as i16;
+                if self.hub_ctrl.on_wheel(delta) {
+                    self.hub_needs_draw = true;
+                }
             }
             WM_KEYDOWN => {
-                if wparam.0 == 0x1B {
-                    self.close_modal();
+                let vk = wparam.0 as u32;
+                let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
+                match self.hub_ctrl.on_key_down(vk, ctrl) {
+                    KeyOutcome::Action(act) => self.on_hub_action(act),
+                    KeyOutcome::Handled => self.hub_needs_draw = true,
+                    KeyOutcome::Ignored if vk == 0x1B => {
+                        self.close_hub();
+                        return Some(LRESULT(0));
+                    }
+                    KeyOutcome::Ignored => {}
                 }
             }
             WM_CHAR => {
                 let unit = wparam.0 as u16;
-                if unit == 0x1B {
-                    self.close_modal();
-                    return Some(LRESULT(0));
-                }
-                if let Some(input) = self.modal_todo_input.as_mut() {
-                    match unit {
-                        0x08 => {
-                            input.pop();
-                        }
-                        0x0D => {
-                            self.on_modal_action(ModalAction::SubmitTodoInput);
-                            return Some(LRESULT(0));
-                        }
-                        u if u >= 0x20 => {
-                            if let Some(c) = char::from_u32(u as u32) {
-                                if input.chars().count() < MAX_TEXT + 8 {
-                                    input.push(c);
-                                }
-                            }
-                        }
-                        _ => {}
+                if let Some(c) = char::from_u32(unit as u32) {
+                    if self.hub_ctrl.on_char(c) {
+                        self.hub_needs_draw = true;
                     }
-                    self.modal_needs_draw = true;
                 }
             }
             WM_CLOSE => {
-                self.close_modal();
+                self.close_hub();
             }
             _ => return None,
         }
@@ -1283,18 +1402,18 @@ impl App {
                 match (lparam.0 & 0xFFFF) as u32 {
                     WM_CONTEXTMENU | WM_RBUTTONUP => self.tray_menu(),
                     WM_LBUTTONUP | 0x400 /* NIN_SELECT */ => {
-                        if self.hidden {
-                            self.set_hidden(false);
-                        }
-                        if self.expanded {
-                            self.collapse();
+                        if self.hub_open {
+                            self.close_hub();
                         } else {
-                            self.expand();
-                            unsafe { SetTimer(Some(hwnd), T_COLLAPSE, 4_000, None) };
+                            self.open_hub(None);
                         }
                     }
                     _ => {}
                 }
+            }
+            crate::platform::WM_APP_SHOW_HUB => {
+                self.open_hub(None);
+                return Some(LRESULT(0));
             }
             WM_TIMER => match wparam.0 {
                 T_TICK => self.on_tick(),

@@ -134,32 +134,26 @@ impl Drop for Tray {
     }
 }
 
-/// Draw the Ailan mark (a monochrome white disc with a black notch pill) into an HICON.
+/// Draw or load the AiLan mark into an HICON.
 fn make_icon(size: i32) -> windows::core::Result<HICON> {
-    let s = size as f32;
-    let mut px = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let d = ((fx - s / 2.0).powi(2) + (fy - s / 2.0).powi(2)).sqrt();
-            let disc = (s / 2.0 - d + 0.5).clamp(0.0, 1.0);
-            let (pw, ph) = (s * 0.56, s * 0.22);
-            let (cx, cy) = (s / 2.0, s * 0.36);
-            let r = ph / 2.0;
-            let qx = ((fx - cx).abs() - (pw / 2.0 - r)).max(0.0);
-            let qy = (fy - cy).abs();
-            let pd = (qx * qx + qy * qy).sqrt() - r;
-            let pill = (0.5 - pd).clamp(0.0, 1.0);
-            let k = 1.0 - pill;
-            let a = disc;
-            let v = (245.0 * k * a) as u8;
-            let i = ((y * size + x) * 4) as usize;
-            px[i] = v;
-            px[i + 1] = v;
-            px[i + 2] = v;
-            px[i + 3] = (a * 255.0) as u8;
+    unsafe {
+        if let Ok(inst) = windows::Win32::System::LibraryLoader::GetModuleHandleW(None) {
+            if let Ok(h) = windows::Win32::UI::WindowsAndMessaging::LoadImageW(
+                Some(inst.into()),
+                PCWSTR(1 as _),
+                windows::Win32::UI::WindowsAndMessaging::IMAGE_ICON,
+                size,
+                size,
+                windows::Win32::UI::WindowsAndMessaging::LR_DEFAULTCOLOR,
+            ) {
+                if !h.is_invalid() {
+                    return Ok(HICON(h.0));
+                }
+            }
         }
     }
+
+    let px = crate::icon_art::render_icon(size);
     unsafe {
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {

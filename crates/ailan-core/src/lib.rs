@@ -6,8 +6,11 @@
 //! local UTC offset in minutes, so logic is deterministic under test.
 
 pub mod anim;
+pub mod brief;
+pub mod command;
 pub mod event;
 pub mod i18n;
+pub mod reminder;
 pub mod scheduler;
 pub mod settings;
 pub mod state;

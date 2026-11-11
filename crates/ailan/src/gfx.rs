@@ -7,16 +7,18 @@ use windows::core::{Interface, Result, PCWSTR};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW,
-    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
+    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1DeviceContext, ID2D1Factory1, ID2D1GradientStopCollection,
+    ID2D1LinearGradientBrush, ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_EXTEND_MODE_CLAMP,
+    D2D1_GAMMA_2_2, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES,
     ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
     D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_ROUNDED_RECT,
-    D2D1_STROKE_STYLE_PROPERTIES1, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_SWEEP_DIRECTION_CLOCKWISE,
+    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -26,7 +28,9 @@ use windows::Win32::Graphics::DirectComposition::{
     DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
+    DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout, IDWriteTextLayout1,
+    IDWriteTypography, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
+    DWRITE_FONT_STRETCH_NORMAL, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
@@ -42,7 +46,30 @@ use windows::Win32::Graphics::Dxgi::{
 use windows_numerics::{Matrix3x2, Vector2};
 
 pub const TEXT_FONT: &str = "Segoe UI Variable Text";
-pub const ICON_FONT: &str = "Segoe MDL2 Assets";
+pub const ICON_FONT_FLUENT: &str = "Segoe Fluent Icons";
+pub const ICON_FONT_MDL2: &str = "Segoe MDL2 Assets";
+
+fn detect_icon_font(dwrite: &IDWriteFactory) -> &'static str {
+    unsafe {
+        let mut collection: Option<IDWriteFontCollection> = None;
+        if dwrite.GetSystemFontCollection(&mut collection, false).is_ok() {
+            if let Some(col) = collection {
+                let mut index = 0u32;
+                let mut exists = windows::core::BOOL::default();
+                let fluent = windows::core::w!("Segoe Fluent Icons");
+                if col.FindFamilyName(windows::core::PCWSTR(fluent.as_ptr()), &mut index, &mut exists).is_ok() && exists.as_bool() {
+                    return ICON_FONT_FLUENT;
+                }
+            }
+        }
+    }
+    ICON_FONT_MDL2
+}
+
+pub fn get_icon_font(dwrite: &IDWriteFactory) -> &'static str {
+    static FONT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    *FONT.get_or_init(|| detect_icon_font(dwrite))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -67,6 +94,17 @@ impl Rect {
     }
     pub fn inset(&self, dx: f32, dy: f32) -> Self {
         Self::new(self.x + dx, self.y + dy, (self.w - 2.0 * dx).max(0.0), (self.h - 2.0 * dy).max(0.0))
+    }
+    /// Overlap of two rects, or `None` when they don't touch.
+    pub fn intersect(&self, o: &Rect) -> Option<Rect> {
+        let x0 = self.x.max(o.x);
+        let y0 = self.y.max(o.y);
+        let x1 = self.right().min(o.right());
+        let y1 = self.bottom().min(o.bottom());
+        (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+    }
+    pub fn center(&self) -> (f32, f32) {
+        (self.x + self.w * 0.5, self.y + self.h * 0.5)
     }
     fn d2d(&self) -> D2D_RECT_F {
         D2D_RECT_F { left: self.x, top: self.y, right: self.right(), bottom: self.bottom() }
@@ -98,6 +136,92 @@ impl Font {
     }
 }
 
+/// A gradient stop table (up to 4 stops) usable as a hash key, so each distinct gradient
+/// creates exactly one `ID2D1GradientStopCollection` + brush for the device's lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Gradient {
+    n: u8,
+    pos: [u16; 4],
+    rgb: [u32; 4],
+    alpha: [u16; 4],
+}
+
+impl Gradient {
+    /// `stops` = `(position 0..1, 0xRRGGBB, alpha 0..1)`; stops beyond the 4th are ignored.
+    pub const fn new(stops: &[(f32, u32, f32)]) -> Self {
+        let mut g = Gradient { n: 0, pos: [0; 4], rgb: [0; 4], alpha: [0; 4] };
+        let mut i = 0;
+        while i < stops.len() && i < 4 {
+            g.pos[i] = (stops[i].0 * 1000.0) as u16;
+            g.rgb[i] = stops[i].1;
+            g.alpha[i] = (stops[i].2 * 1000.0) as u16;
+            i += 1;
+        }
+        g.n = i as u8;
+        g
+    }
+
+    fn stops(&self) -> Vec<D2D1_GRADIENT_STOP> {
+        (0..self.n as usize)
+            .map(|i| D2D1_GRADIENT_STOP {
+                position: self.pos[i] as f32 / 1000.0,
+                color: color(self.rgb[i], self.alpha[i] as f32 / 1000.0),
+            })
+            .collect()
+    }
+}
+
+/// Extra text shaping options that need an `IDWriteTextLayout`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TextStyle {
+    /// Extra spacing after each character, DIP.
+    pub tracking: f32,
+    /// OpenType `tnum`: fixed-width digits so clocks never jitter.
+    pub tabular: bool,
+    pub strike: bool,
+}
+
+impl TextStyle {
+    pub const TABULAR: TextStyle = TextStyle { tracking: 0.0, tabular: true, strike: false };
+    pub const STRIKE: TextStyle = TextStyle { tracking: 0.0, tabular: false, strike: true };
+    pub const fn tracked(tracking: f32) -> Self {
+        TextStyle { tracking, tabular: false, strike: false }
+    }
+}
+
+/// A coloured run inside [`Canvas::text_rich`], in UTF-8 byte offsets of the string.
+#[derive(Debug, Clone)]
+pub struct RichSpan {
+    pub bytes: std::ops::Range<usize>,
+    pub rgb: u32,
+    /// Optional soft pill drawn behind the run: `(rgb, alpha)`.
+    pub bg: Option<(u32, f32)>,
+}
+
+/// Device-bound resources reused across frames (released together with the `Gfx`).
+#[derive(Default)]
+struct GfxCache {
+    stops: HashMap<Gradient, ID2D1GradientStopCollection>,
+    linear: HashMap<Gradient, ID2D1LinearGradientBrush>,
+    radial: HashMap<Gradient, ID2D1RadialGradientBrush>,
+    /// Per-colour brushes used as DirectWrite drawing effects for rich text.
+    ink: HashMap<u32, ID2D1SolidColorBrush>,
+    tabular: Option<IDWriteTypography>,
+}
+
+fn pt(x: f32, y: f32) -> Vector2 {
+    Vector2 { X: x, Y: y }
+}
+
+/// UTF-16 index of a UTF-8 byte offset (snapped down to a char boundary, never panics).
+fn utf16_index(s: &str, byte: usize) -> u32 {
+    let mut b = byte.min(s.len());
+    while b > 0 && !s.is_char_boundary(b) {
+        b -= 1;
+    }
+    s[..b].encode_utf16().count() as u32
+}
+
 pub struct Gfx {
     _d3d: ID3D11Device,
     dxgi: IDXGIDevice,
@@ -111,6 +235,7 @@ pub struct Gfx {
     brush: ID2D1SolidColorBrush,
     round_stroke: Option<ID2D1StrokeStyle>,
     formats: HashMap<Font, IDWriteTextFormat>,
+    cache: GfxCache,
     pub width: u32,
     pub height: u32,
     pub scale: f32,
@@ -167,6 +292,8 @@ impl Gfx {
             let stroke_props = D2D1_STROKE_STYLE_PROPERTIES1 {
                 startCap: D2D1_CAP_STYLE_ROUND,
                 endCap: D2D1_CAP_STYLE_ROUND,
+                dashCap: D2D1_CAP_STYLE_ROUND,
+                lineJoin: D2D1_LINE_JOIN_ROUND,
                 ..Default::default()
             };
             let round_stroke = factory.CreateStrokeStyle(&stroke_props, None).and_then(|s| s.cast::<ID2D1StrokeStyle>()).ok();
@@ -184,6 +311,7 @@ impl Gfx {
                 brush,
                 round_stroke,
                 formats: HashMap::new(),
+                cache: GfxCache::default(),
                 width: width.max(1),
                 height: height.max(1),
                 scale,
@@ -238,7 +366,9 @@ impl Gfx {
                 round_stroke: self.round_stroke.as_ref(),
                 dwrite: &self.dwrite,
                 formats: &mut self.formats,
+                cache: &mut self.cache,
                 alpha: 1.0,
+                scale: self.scale,
             };
             f(&mut cv);
         }
@@ -295,12 +425,33 @@ pub struct Canvas<'a> {
     round_stroke: Option<&'a ID2D1StrokeStyle>,
     dwrite: &'a IDWriteFactory,
     formats: &'a mut HashMap<Font, IDWriteTextFormat>,
+    cache: &'a mut GfxCache,
     pub alpha: f32,
+    pub scale: f32,
 }
 
 impl Canvas<'_> {
     fn set(&self, rgb: u32, a: f32) {
         unsafe { self.brush.SetColor(&color(rgb, a * self.alpha)) };
+    }
+
+    pub fn push_clip(&self, r: Rect) {
+        unsafe {
+            self.dc.PushAxisAlignedClip(&r.d2d(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+    }
+
+    pub fn pop_clip(&self) {
+        unsafe {
+            self.dc.PopAxisAlignedClip();
+        }
+    }
+
+    /// 1-physical-pixel crisp hairline border.
+    pub fn hairline_round(&self, r: Rect, radius: f32, rgb: u32, a: f32) {
+        let half_px = (0.5 / self.scale).max(0.25);
+        let inset_r = r.inset(half_px, half_px);
+        self.stroke_round(inset_r, (radius - half_px).max(0.0), half_px * 2.0, rgb, a);
     }
 
     pub fn fill_rect(&self, r: Rect, rgb: u32, a: f32) {
@@ -439,7 +590,8 @@ impl Canvas<'_> {
         if let Some(f) = self.formats.get(&font) {
             return Some(f.clone());
         }
-        let family = super::platform::wide(if font.icon { ICON_FONT } else { TEXT_FONT });
+        let family_str = if font.icon { get_icon_font(self.dwrite) } else { TEXT_FONT };
+        let family = super::platform::wide(family_str);
         let fmt = unsafe {
             self.dwrite
                 .CreateTextFormat(
@@ -495,6 +647,316 @@ impl Canvas<'_> {
     pub fn glyph(&mut self, ch: char, size: f32, r: Rect, rgb: u32, a: f32) {
         let mut buf = [0u8; 4];
         self.text(ch.encode_utf8(&mut buf), Font::icon(size), r, rgb, a);
+    }
+
+    /// Draw subsequent primitives translated by `(tx, ty)` and uniformly scaled by `s`
+    /// (DIP space). Used to render the real notch UI as a miniature live preview.
+    pub fn set_transform(&self, tx: f32, ty: f32, s: f32) {
+        let m = Matrix3x2 { M11: s, M12: 0.0, M21: 0.0, M22: s, M31: tx, M32: ty };
+        unsafe { self.dc.SetTransform(&m) };
+    }
+
+    pub fn reset_transform(&self) {
+        unsafe { self.dc.SetTransform(&Matrix3x2::identity()) };
+    }
+
+    /// Fill a rect whose corners have individual radii `[top-left, top-right, bottom-right, bottom-left]`.
+    pub fn fill_round_corners(&self, r: Rect, radii: [f32; 4], rgb: u32, a: f32) {
+        let max = (r.w * 0.5).min(r.h * 0.5);
+        let [tl, tr, br, bl] = radii.map(|v| v.clamp(0.0, max));
+        let arc = |sink: &windows::Win32::Graphics::Direct2D::ID2D1GeometrySink, x: f32, y: f32, rad: f32| unsafe {
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: pt(x, y),
+                size: D2D_SIZE_F { width: rad, height: rad },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            });
+        };
+        unsafe {
+            let Ok(path) = self.factory.CreatePathGeometry() else { return };
+            let Ok(sink) = path.Open() else { return };
+            sink.BeginFigure(pt(r.x + tl, r.y), D2D1_FIGURE_BEGIN_FILLED);
+            sink.AddLine(pt(r.right() - tr, r.y));
+            if tr > 0.0 {
+                arc(&sink, r.right(), r.y + tr, tr);
+            }
+            sink.AddLine(pt(r.right(), r.bottom() - br));
+            if br > 0.0 {
+                arc(&sink, r.right() - br, r.bottom(), br);
+            }
+            sink.AddLine(pt(r.x + bl, r.bottom()));
+            if bl > 0.0 {
+                arc(&sink, r.x, r.bottom() - bl, bl);
+            }
+            sink.AddLine(pt(r.x, r.y + tl));
+            if tl > 0.0 {
+                arc(&sink, r.x + tl, r.y, tl);
+            }
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            if sink.Close().is_ok() {
+                self.set(rgb, a);
+                self.dc.FillGeometry(&path, self.brush, None);
+            }
+        }
+    }
+
+    // ---- gradients ---------------------------------------------------------------
+
+    fn stop_collection(&mut self, g: Gradient) -> Option<ID2D1GradientStopCollection> {
+        if let Some(c) = self.cache.stops.get(&g) {
+            return Some(c.clone());
+        }
+        let stops = g.stops();
+        let rt: &ID2D1RenderTarget = self.dc;
+        let c = unsafe { rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP).ok()? };
+        self.cache.stops.insert(g, c.clone());
+        Some(c)
+    }
+
+    fn linear(&mut self, g: Gradient, from: (f32, f32), to: (f32, f32), a: f32) -> Option<ID2D1LinearGradientBrush> {
+        let brush = match self.cache.linear.get(&g) {
+            Some(b) => b.clone(),
+            None => {
+                let stops = self.stop_collection(g)?;
+                let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: pt(from.0, from.1), endPoint: pt(to.0, to.1) };
+                let b = unsafe { self.dc.CreateLinearGradientBrush(&props, None, &stops).ok()? };
+                self.cache.linear.insert(g, b.clone());
+                b
+            }
+        };
+        unsafe {
+            brush.SetStartPoint(pt(from.0, from.1));
+            brush.SetEndPoint(pt(to.0, to.1));
+            brush.SetOpacity((a * self.alpha).clamp(0.0, 1.0));
+        }
+        Some(brush)
+    }
+
+    fn radial(&mut self, g: Gradient, center: (f32, f32), radius: f32, a: f32) -> Option<ID2D1RadialGradientBrush> {
+        let brush = match self.cache.radial.get(&g) {
+            Some(b) => b.clone(),
+            None => {
+                let stops = self.stop_collection(g)?;
+                let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+                    center: pt(center.0, center.1),
+                    gradientOriginOffset: pt(0.0, 0.0),
+                    radiusX: radius,
+                    radiusY: radius,
+                };
+                let b = unsafe { self.dc.CreateRadialGradientBrush(&props, None, &stops).ok()? };
+                self.cache.radial.insert(g, b.clone());
+                b
+            }
+        };
+        unsafe {
+            brush.SetCenter(pt(center.0, center.1));
+            brush.SetRadiusX(radius);
+            brush.SetRadiusY(radius);
+            brush.SetOpacity((a * self.alpha).clamp(0.0, 1.0));
+        }
+        Some(brush)
+    }
+
+    /// Fill a rect with a linear gradient running `from` → `to` (absolute DIPs).
+    pub fn fill_rect_linear(&mut self, r: Rect, g: Gradient, from: (f32, f32), to: (f32, f32), a: f32) {
+        if let Some(b) = self.linear(g, from, to, a) {
+            unsafe { self.dc.FillRectangle(&r.d2d(), &b) };
+        }
+    }
+
+    pub fn fill_round_linear(&mut self, r: Rect, radius: f32, g: Gradient, from: (f32, f32), to: (f32, f32), a: f32) {
+        if let Some(b) = self.linear(g, from, to, a) {
+            let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+            unsafe { self.dc.FillRoundedRectangle(&rr, &b) };
+        }
+    }
+
+    /// Crisp 1-physical-pixel rounded border painted with a linear gradient.
+    pub fn hairline_round_linear(&mut self, r: Rect, radius: f32, g: Gradient, from: (f32, f32), to: (f32, f32), a: f32) {
+        let half_px = (0.5 / self.scale).max(0.25);
+        let ir = r.inset(half_px, half_px);
+        let rad = (radius - half_px).max(0.0);
+        if let Some(b) = self.linear(g, from, to, a) {
+            let rr = D2D1_ROUNDED_RECT { rect: ir.d2d(), radiusX: rad, radiusY: rad };
+            unsafe { self.dc.DrawRoundedRectangle(&rr, &b, half_px * 2.0, None) };
+        }
+    }
+
+    /// Fill a rounded rect with a radial gradient centred at `center` (clipped to the shape).
+    pub fn fill_round_radial(&mut self, r: Rect, radius: f32, g: Gradient, center: (f32, f32), glow_r: f32, a: f32) {
+        if let Some(b) = self.radial(g, center, glow_r, a) {
+            let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+            unsafe { self.dc.FillRoundedRectangle(&rr, &b) };
+        }
+    }
+
+    /// Soft circular glow.
+    pub fn fill_circle_radial(&mut self, cx: f32, cy: f32, radius: f32, g: Gradient, a: f32) {
+        if let Some(b) = self.radial(g, (cx, cy), radius, a) {
+            let e = D2D1_ELLIPSE { point: pt(cx, cy), radiusX: radius, radiusY: radius };
+            unsafe { self.dc.FillEllipse(&e, &b) };
+        }
+    }
+
+    /// Stroke the first `progress` (0..1) of a polyline's length with round caps/joins —
+    /// used for the hand-drawn check mark.
+    pub fn stroke_polyline(&self, pts: &[(f32, f32)], progress: f32, width: f32, rgb: u32, a: f32) {
+        if pts.len() < 2 || progress <= 0.001 {
+            return;
+        }
+        let lens: Vec<f32> = pts.windows(2).map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()).collect();
+        let total: f32 = lens.iter().sum();
+        let mut left = total * progress.clamp(0.0, 1.0);
+        unsafe {
+            let Ok(path) = self.factory.CreatePathGeometry() else { return };
+            let Ok(sink) = path.Open() else { return };
+            sink.BeginFigure(pt(pts[0].0, pts[0].1), D2D1_FIGURE_BEGIN_HOLLOW);
+            for (i, len) in lens.iter().enumerate() {
+                let (p0, p1) = (pts[i], pts[i + 1]);
+                if left >= *len {
+                    sink.AddLine(pt(p1.0, p1.1));
+                    left -= len;
+                } else {
+                    let f = if *len > 0.0 { left / len } else { 0.0 };
+                    sink.AddLine(pt(p0.0 + (p1.0 - p0.0) * f, p0.1 + (p1.1 - p0.1) * f));
+                    break;
+                }
+            }
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            if sink.Close().is_ok() {
+                self.set(rgb, a);
+                self.dc.DrawGeometry(&path, self.brush, width, self.round_stroke);
+            }
+        }
+    }
+
+    // ---- text layouts ----------------------------------------------------------------
+
+    fn tabular(&mut self) -> Option<IDWriteTypography> {
+        if let Some(t) = &self.cache.tabular {
+            return Some(t.clone());
+        }
+        unsafe {
+            let t = self.dwrite.CreateTypography().ok()?;
+            t.AddFontFeature(DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, parameter: 1 }).ok()?;
+            self.cache.tabular = Some(t.clone());
+            Some(t)
+        }
+    }
+
+    fn layout(&mut self, w: &[u16], font: Font, max_w: f32, max_h: f32, style: TextStyle) -> Option<IDWriteTextLayout> {
+        let fmt = self.format(font)?;
+        let layout = unsafe { self.dwrite.CreateTextLayout(w, &fmt, max_w.max(1.0), max_h.max(1.0)).ok()? };
+        let all = DWRITE_TEXT_RANGE { startPosition: 0, length: w.len() as u32 };
+        unsafe {
+            if style.strike {
+                let _ = layout.SetStrikethrough(true, all);
+            }
+            if style.tracking != 0.0 {
+                if let Ok(l1) = layout.cast::<IDWriteTextLayout1>() {
+                    let _ = l1.SetCharacterSpacing(0.0, style.tracking, 0.0, all);
+                }
+            }
+            if style.tabular {
+                if let Some(t) = self.tabular() {
+                    let _ = layout.SetTypography(&t, all);
+                }
+            }
+        }
+        Some(layout)
+    }
+
+    /// Single-line text with tracking / tabular figures / strikethrough.
+    pub fn text_styled(&mut self, s: &str, font: Font, r: Rect, rgb: u32, a: f32, style: TextStyle) {
+        if s.is_empty() || r.w <= 0.0 {
+            return;
+        }
+        if style == TextStyle::default() {
+            self.text(s, font, r, rgb, a);
+            return;
+        }
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let Some(layout) = self.layout(&w, font, r.w, r.h, style) else { return };
+        self.set(rgb, a);
+        self.push_clip(r);
+        unsafe { self.dc.DrawTextLayout(pt(r.x, r.y), &layout, self.brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT) };
+        self.pop_clip();
+    }
+
+    /// Advance width of `s` in DIPs.
+    pub fn text_width(&mut self, s: &str, font: Font, style: TextStyle) -> f32 {
+        if s.is_empty() {
+            return 0.0;
+        }
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let Some(layout) = self.layout(&w, font, 4096.0, 64.0, style) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        if unsafe { layout.GetMetrics(&mut m) }.is_ok() {
+            m.widthIncludingTrailingWhitespace
+        } else {
+            0.0
+        }
+    }
+
+    fn ink(&mut self, rgb: u32, a: f32) -> Option<ID2D1SolidColorBrush> {
+        let c = color(rgb, a * self.alpha);
+        if let Some(b) = self.cache.ink.get(&rgb) {
+            unsafe { b.SetColor(&c) };
+            return Some(b.clone());
+        }
+        let b = unsafe { self.dc.CreateSolidColorBrush(&c, None).ok()? };
+        self.cache.ink.insert(rgb, b.clone());
+        Some(b)
+    }
+
+    /// Editable single-line text with coloured runs, optional soft run backgrounds and a
+    /// caret (`Some(rgb)`) at the end. Scrolls horizontally so the caret stays visible.
+    pub fn text_rich(&mut self, s: &str, font: Font, r: Rect, rgb: u32, a: f32, spans: &[RichSpan], caret: Option<u32>) {
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let Some(layout) = self.layout(&w, font, 4096.0, r.h, TextStyle::default()) else { return };
+        let mut caret_x = 0.0f32;
+        if !w.is_empty() {
+            let (mut x, mut y) = (0.0f32, 0.0f32);
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if unsafe { layout.HitTestTextPosition(w.len() as u32 - 1, true, &mut x, &mut y, &mut m) }.is_ok() {
+                caret_x = x;
+            }
+        }
+        let ox = r.x - (caret_x - r.w + 6.0).max(0.0);
+        self.push_clip(r);
+        for sp in spans {
+            let start = utf16_index(s, sp.bytes.start);
+            let end = utf16_index(s, sp.bytes.end);
+            if end <= start {
+                continue;
+            }
+            let range = DWRITE_TEXT_RANGE { startPosition: start, length: end - start };
+            if let Some(b) = self.ink(sp.rgb, a) {
+                unsafe {
+                    let _ = layout.SetDrawingEffect(&b, range);
+                }
+            }
+            if let Some((bg, ba)) = sp.bg {
+                let (mut x0, mut y0, mut x1, mut y1) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                let mut m = DWRITE_HIT_TEST_METRICS::default();
+                let ok = unsafe {
+                    layout.HitTestTextPosition(start, false, &mut x0, &mut y0, &mut m).is_ok()
+                        && layout.HitTestTextPosition(end - 1, true, &mut x1, &mut y1, &mut m).is_ok()
+                };
+                if ok {
+                    let pill = Rect::new(ox + x0 - 4.0, r.y + y0 - 1.0, x1 - x0 + 8.0, m.height + 2.0);
+                    self.fill_round(pill, 5.0, bg, ba);
+                }
+            }
+        }
+        self.set(rgb, a);
+        unsafe { self.dc.DrawTextLayout(pt(ox, r.y), &layout, self.brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT) };
+        if let Some(caret_rgb) = caret {
+            let ch = font.size2 as f32 / 2.0 * 1.3;
+            self.fill_round(Rect::new(ox + caret_x + 1.0, r.y + (r.h - ch) * 0.5, 1.5, ch), 0.75, caret_rgb, a);
+        }
+        self.pop_clip();
     }
 
     /// Fill a rounded rect with a bitmap scaled to cover it.

@@ -2,6 +2,7 @@
 //! notification and forwards `AppEvent`s through an [`EventSink`].
 
 pub mod appbar;
+pub mod appwindow;
 pub mod audio;
 pub mod autostart;
 pub mod brightness;
@@ -25,6 +26,8 @@ pub const WM_APP_TRAY: u32 = WM_APP + 2;
 pub const WM_APP_AUDIO_DEVICE: u32 = WM_APP + 3;
 /// Shell app-bar notifications (fullscreen app opened/closed).
 pub const WM_APP_APPBAR: u32 = WM_APP + 4;
+/// Show / bring to front AiLan Personal Hub window (e.g. from single-instance launch).
+pub const WM_APP_SHOW_HUB: u32 = WM_APP + 5;
 
 /// Thread-safe handle providers use to deliver events to the UI thread.
 #[derive(Clone)]

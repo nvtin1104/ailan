@@ -11,6 +11,8 @@ use crate::timer::{Phase, Pomodoro};
 pub const OSD_MS: i64 = 1_500;
 pub const BANNER_MS: i64 = 4_000;
 pub const REMINDER_MS: i64 = 10_000;
+pub const REMINDER_BANNER_MS: i64 = 25_000;
+pub const PIN_PEEK_MS: i64 = 1_800;
 pub const SAVE_DEBOUNCE_MS: i64 = 1_000;
 pub const LOW_BATTERY: u8 = 20;
 
@@ -44,6 +46,14 @@ pub struct Banner {
     pub title: String,
     pub body: String,
     pub until: i64,
+    pub todo_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinAnim {
+    pub tab: Tab,
+    pub pinned: bool,
+    pub start: i64,
 }
 
 /// What the collapsed notch is showing, in priority order.
@@ -51,6 +61,7 @@ pub struct Banner {
 pub enum Collapsed {
     Osd,
     Banner,
+    PinPeek,
     Timer,
     Media,
     Todo,
@@ -84,6 +95,7 @@ pub struct AppState {
     pub pomodoro: Pomodoro,
     pub osd: Option<Osd>,
     pub banner: Option<Banner>,
+    pub pin_anim: Option<PinAnim>,
     /// Explicit peek deadline when Focus is manually started/resumed.
     pub focus_peek_until: Option<i64>,
 
@@ -109,6 +121,7 @@ impl AppState {
             pomodoro,
             osd: None,
             banner: None,
+            pin_anim: None,
             focus_peek_until: None,
             save_due: None,
             settings_dirty: false,
@@ -121,7 +134,48 @@ impl AppState {
     }
 
     fn banner(&mut self, icon: BannerIcon, title: impl Into<String>, body: impl Into<String>, until: i64) {
-        self.banner = Some(Banner { icon, title: title.into(), body: body.into(), until });
+        self.banner_with_id(icon, title, body, until, None);
+    }
+
+    fn banner_with_id(
+        &mut self,
+        icon: BannerIcon,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        until: i64,
+        todo_id: Option<u64>,
+    ) {
+        self.banner = Some(Banner {
+            icon,
+            title: title.into(),
+            body: body.into(),
+            until,
+            todo_id,
+        });
+    }
+
+    pub fn trigger_pin_anim(&mut self, tab: Tab, pinned: bool, now: i64) {
+        self.pin_anim = Some(PinAnim { tab, pinned, start: now });
+    }
+
+    pub fn snooze_banner(&mut self, minutes: u32, now: i64) {
+        if let Some(b) = &self.banner {
+            if let Some(id) = b.todo_id {
+                self.data.todos.snooze(id, now, minutes);
+                self.mark_data_dirty(now);
+            }
+        }
+        self.banner = None;
+    }
+
+    pub fn complete_banner(&mut self, now: i64) {
+        if let Some(b) = &self.banner {
+            if let Some(id) = b.todo_id {
+                self.data.todos.toggle(id, now, self.offset_min);
+                self.mark_data_dirty(now);
+            }
+        }
+        self.banner = None;
     }
 
     /// Check whether a specific activity is currently running/active on the collapsed notch.
@@ -290,6 +344,9 @@ impl AppState {
         if self.focus_peek_until.is_some_and(|u| u <= now) {
             self.focus_peek_until = None;
         }
+        if self.pin_anim.as_ref().is_some_and(|p| now - p.start >= PIN_PEEK_MS) {
+            self.pin_anim = None;
+        }
         if let Some(finished) = self.pomodoro.poll(now) {
             self.focus_peek_until = None;
             let (icon, body) = match finished {
@@ -306,8 +363,15 @@ impl AppState {
         let due = self.data.todos.take_due(now);
         if !due.is_empty() {
             self.mark_data_dirty(now);
-            let body = due.join(" · ");
-            self.banner(BannerIcon::Reminder, t(lang, Key::Reminder), body.clone(), now + REMINDER_MS);
+            let first_id = due[0].0;
+            let body = due.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join(" · ");
+            self.banner_with_id(
+                BannerIcon::Reminder,
+                t(lang, Key::Reminder),
+                body.clone(),
+                now + REMINDER_BANNER_MS,
+                Some(first_id),
+            );
             out.push(Notification { title: t(lang, Key::Reminder).into(), body });
         }
         out
@@ -337,6 +401,9 @@ impl AppState {
         }
         if self.banner.as_ref().is_some_and(|b| b.until > now) {
             return Collapsed::Banner;
+        }
+        if self.pin_anim.as_ref().is_some_and(|p| now - p.start < PIN_PEEK_MS) {
+            return Collapsed::PinPeek;
         }
         if self.settings.minimal || self.settings.mode == NotchMode::MinimalOnly {
             return Collapsed::Minimal;

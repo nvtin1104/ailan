@@ -280,6 +280,50 @@ pub struct Settings {
     /// Whether To-do activity is pinned to appear on Hover UI & dynamic notch.
     #[serde(alias = "todo_active")]
     pub pin_todo: bool,
+    /// Settings for the AiLan Control Hub / Personal App window.
+    pub app_window: AppWindowConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppMode {
+    #[default]
+    Compact,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HubPage {
+    #[default]
+    Today,
+    Todos,
+    Reminders,
+    Island,
+    Settings,
+    Ai,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppWindowConfig {
+    pub mode: AppMode,
+    pub full_w: f32,
+    pub full_h: f32,
+    pub full_pos: Option<(i32, i32)>,
+    pub last_page: HubPage,
+}
+
+impl Default for AppWindowConfig {
+    fn default() -> Self {
+        Self {
+            mode: AppMode::Compact,
+            full_w: 1000.0,
+            full_h: 680.0,
+            full_pos: None,
+            last_page: HubPage::Today,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -299,6 +343,7 @@ impl Default for Settings {
             pin_focus: false,
             pin_music: false,
             pin_todo: false,
+            app_window: AppWindowConfig::default(),
         }
     }
 }

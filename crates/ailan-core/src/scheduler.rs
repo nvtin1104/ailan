@@ -30,6 +30,7 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
     if !view.hidden {
         add(s.osd.as_ref().map(|o| o.until));
         add(s.banner.as_ref().map(|b| b.until));
+        add(s.pin_anim.as_ref().map(|p| p.start + crate::state::PIN_PEEK_MS));
 
         let mode = s.collapsed(now);
         let shows_clock = (view.expanded && s.settings.hover_ui.show_clock)

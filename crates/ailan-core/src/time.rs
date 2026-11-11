@@ -54,6 +54,44 @@ pub fn local_day(epoch_ms: i64, offset_min: i32) -> i64 {
     (epoch_ms + offset_min as i64 * MINUTE).div_euclid(DAY)
 }
 
+/// Epoch ms of local midnight (00:00:00.000) for the given timestamp.
+pub fn local_midnight(epoch_ms: i64, offset_min: i32) -> i64 {
+    let off = offset_min as i64 * MINUTE;
+    let local = epoch_ms + off;
+    (local.div_euclid(DAY) * DAY) - off
+}
+
+/// Number of days in a given Gregorian month (1..=12).
+pub fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            if leap { 29 } else { 28 }
+        }
+        _ => 30,
+    }
+}
+
+/// Days since 1970-01-01 from civil (year, month, day).
+pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = y - if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u32;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe as i32 - 719_468) as i64
+}
+
+/// Convert civil date & time into UTC epoch milliseconds.
+pub fn make_epoch(year: i32, month: u32, day: u32, hour: u32, minute: u32, offset_min: i32) -> i64 {
+    let days = days_from_civil(year, month, day);
+    let ms_of_day = hour as i64 * HOUR + minute as i64 * MINUTE;
+    let off = offset_min as i64 * MINUTE;
+    (days * DAY + ms_of_day) - off
+}
+
 /// Epoch ms of the next local time `hour:minute` strictly after `now`.
 pub fn next_local_time(now: i64, offset_min: i32, hour: u32, minute: u32) -> i64 {
     let off = offset_min as i64 * MINUTE;

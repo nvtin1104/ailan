@@ -15,7 +15,9 @@ use crate::gfx::{Align, Canvas, Font, Rect};
 
 // ---- Monochrome Palette (Pure Black & White + Neutral Grays) --------------------
 pub const BG: u32 = 0x000000;
+#[allow(dead_code)]
 pub const PANEL_BG: u32 = 0x0A0A0C;
+#[allow(dead_code)]
 pub const SURFACE: u32 = 0x141417;
 pub const SURFACE_HI: u32 = 0x1F1F24;
 
@@ -47,8 +49,6 @@ pub const G_CHEVRON_RIGHT: char = '\u{E76C}';
 pub const G_SETTINGS: char = '\u{E713}';
 pub const G_HOME: char = '\u{E80F}';
 pub const G_PIN: char = '\u{E718}';
-pub const G_UP: char = '\u{E74A}';
-pub const G_DOWN: char = '\u{E74B}';
 
 // ---- geometry (DIP) -------------------------------------------------------------
 /// Window width includes room for the 420px expanded notch + 2×22px concave ears.
@@ -76,6 +76,7 @@ pub fn collapsed_size(st: &AppState, mode: Collapsed) -> (f32, f32) {
             }
         }
         Collapsed::Clock | Collapsed::Media | Collapsed::Timer | Collapsed::Todo => (150.0, 30.0),
+        Collapsed::PinPeek => (230.0, 36.0),
         Collapsed::Osd => (240.0, 34.0),
         Collapsed::Banner => (310.0, 60.0),
     }
@@ -85,6 +86,7 @@ pub fn collapsed_size(st: &AppState, mode: Collapsed) -> (f32, f32) {
 pub fn ear_for(expand: f32, mode: Collapsed) -> f32 {
     let base_ear = match mode {
         Collapsed::Banner => EAR_BANNER,
+        Collapsed::PinPeek => 12.0,
         Collapsed::Osd => 11.0,
         _ => EAR_COLLAPSED,
     };
@@ -95,6 +97,7 @@ pub fn ear_for(expand: f32, mode: Collapsed) -> f32 {
 fn radius_for(expand: f32, mode: Collapsed) -> f32 {
     let base_r = match mode {
         Collapsed::Banner => RADIUS_BANNER,
+        Collapsed::PinPeek => 18.0,
         Collapsed::Osd => 16.0,
         _ => RADIUS_COLLAPSED,
     };
@@ -133,6 +136,8 @@ pub enum Action {
     TodoToggle(u64),
     TodoDelete(u64),
     TodoScroll,
+    SnoozeBanner(u32),
+    CompleteBanner,
 }
 
 impl Action {
@@ -293,6 +298,7 @@ fn draw_arrow_btn(cv: &mut Canvas, v: &View, hits: &mut Vec<Hit>, cx: f32, cy: f
 // ---- collapsed (Resting / Closed 150×30, Banner 310×60) -------------------------
 
 fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>) {
+    let lang = st.lang();
     let p = v.pill;
     let cy = p.y + p.h * 0.5;
     let c = civil(v.now, st.offset_min);
@@ -333,13 +339,13 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
             }
             let time_s = format!("{:02}:{:02}", c.hour, c.minute);
             cv.text(&time_s, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 27.0, cy - 7.0, 16.0, 14.0), playing);
+            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Clock | Collapsed::Media => {
             draw_status_ring(cv, st, p.x + 20.0, cy);
             let time_s = format!("{:02}:{:02}", c.hour, c.minute);
             cv.text(&time_s, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 27.0, cy - 7.0, 16.0, 14.0), playing);
+            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Timer => {
             if st.settings.collapsed_ui.focus_show_icon {
@@ -352,7 +358,7 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
                 format!("{:02}:{:02}", c.hour, c.minute)
             };
             cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 27.0, cy - 7.0, 16.0, 14.0), playing);
+            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Todo => {
             if st.settings.collapsed_ui.todo_show_icon {
@@ -366,7 +372,7 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
                 format!("{:02}:{:02}", c.hour, c.minute)
             };
             cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, st, v, Rect::new(p.right() - 27.0, cy - 7.0, 16.0, 14.0), playing);
+            draw_wave_bars(cv, st, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Osd => {
             let Some(o) = &st.osd else { return };
@@ -442,17 +448,58 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
                     );
                 }
                 _ => {
-                    let time_s = format!("{:02}:{:02}", c.hour, c.minute);
-                    cv.text(
-                        &time_s,
-                        Font::text(13.0, 600, Align::Right),
-                        Rect::new(p.right() - 72.0, p.y, 52.0, p.h),
-                        WHITE,
-                        0.9,
-                    );
+                    if b.todo_id.is_some() {
+                        let snz_r = Rect::new(p.right() - 120.0, p.y + 17.0, 56.0, 26.0);
+                        let h_snz = hover_amt(v, Action::SnoozeBanner(5));
+                        cv.fill_round(snz_r, 13.0, WHITE, 0.14 + 0.10 * h_snz);
+                        cv.text(t(lang, Key::Snooze5m), Font::text(10.5, 600, Align::Center), snz_r, WHITE, 0.95);
+                        hits.push(Hit { rect: snz_r, action: Action::SnoozeBanner(5) });
+
+                        let done_r = Rect::new(p.right() - 58.0, p.y + 17.0, 46.0, 26.0);
+                        let h_done = hover_amt(v, Action::CompleteBanner);
+                        cv.fill_round(done_r, 13.0, WHITE, 0.90 + 0.10 * h_done);
+                        cv.text(t(lang, Key::DoneAction), Font::text(10.5, 700, Align::Center), done_r, BG, 1.0);
+                        hits.push(Hit { rect: done_r, action: Action::CompleteBanner });
+                    } else {
+                        let time_s = format!("{:02}:{:02}", c.hour, c.minute);
+                        cv.text(
+                            &time_s,
+                            Font::text(13.0, 600, Align::Right),
+                            Rect::new(p.right() - 72.0, p.y, 52.0, p.h),
+                            WHITE,
+                            0.9,
+                        );
+                    }
                 }
             }
             hits.push(Hit { rect: p, action: Action::DismissBanner });
+        }
+        Collapsed::PinPeek => {
+            let Some(pin) = st.pin_anim else { return };
+            let icon = match pin.tab {
+                Tab::Focus => G_TIMER,
+                Tab::Music => G_MUSIC,
+                Tab::Todo => G_CHECKMARK,
+            };
+            let label = if pin.pinned {
+                t(lang, Key::PinnedToIslandToast)
+            } else {
+                t(lang, Key::UnpinnedFromIslandToast)
+            };
+            let elapsed = (v.now - pin.start).max(0) as f32;
+            let drop_t = (elapsed / 320.0).clamp(0.0, 1.0);
+            let drop_y = -8.0 * (1.0 - drop_t);
+            let icon_r = Rect::new(p.x + 14.0, p.y + 7.0 + drop_y, 22.0, 22.0);
+            cv.fill_round(icon_r, 7.0, WHITE, 0.92);
+            cv.glyph(icon, 12.0, icon_r, BG, 1.0);
+
+            cv.text(
+                label,
+                Font::text(12.0, 650, Align::Left),
+                Rect::new(p.x + 44.0, p.y, p.w - 52.0, p.h),
+                WHITE,
+                0.96,
+            );
         }
     }
 }
@@ -482,17 +529,25 @@ fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut V
         cv.text(&time_s, Font::text(12.5, 700, Align::Left), Rect::new(hx, p.y + 8.0, 44.0, 20.0), WHITE, 1.0);
     }
 
-    // Home icon on the top-right beside the wave bars (no hover scaling, cursor only).
-    let home_r = Rect::new(p.right() - 54.0, p.y + 8.0, 22.0, 20.0);
+    // Wave bars and Home icon on the top-right
+    let wave_w = 20.0;
+    let wave_h = 14.0;
+    let wave_r = Rect::new(p.right() - 28.0 - wave_w, hdr_cy - wave_h * 0.5, wave_w, wave_h);
+
+    let home_w = 26.0;
+    let home_h = 24.0;
+    let home_gap = 14.0;
+    let home_r = Rect::new(wave_r.x - home_gap - home_w, hdr_cy - home_h * 0.5, home_w, home_h);
     let h_home = hover_amt(v, Action::OpenSettings);
     if h_home > 0.01 {
-        cv.fill_round(home_r, 6.0, WHITE, 0.14 * h_home);
+        cv.fill_round(home_r, 8.0, WHITE, 0.16 * h_home);
+        cv.hairline_round(home_r, 8.0, WHITE, 0.22 * h_home);
     }
-    cv.glyph(G_HOME, 11.5, home_r, WHITE, 0.65 + 0.35 * h_home);
-    hits.push(Hit { rect: home_r.inset(-2.0, -2.0), action: Action::OpenSettings });
+    cv.glyph(G_HOME, 12.0, home_r, WHITE, 0.70 + 0.30 * h_home);
+    hits.push(Hit { rect: home_r.inset(-3.0, -3.0), action: Action::OpenSettings });
 
-    // 5 audio-reactive sound-wave bars at `left: 388px, top: 18px`.
-    draw_wave_bars(cv, st, v, Rect::new(p.x + 388.0, hdr_cy - 7.0, 16.0, 14.0), playing);
+    // 5 audio-reactive sound-wave bars
+    draw_wave_bars(cv, st, v, wave_r, playing);
 
     // 2. Filter visible activities on Hover UI:
     // - Music triggers automatically when playing/active, or if pinned.
