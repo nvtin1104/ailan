@@ -3,6 +3,7 @@
 //! concave top-edge corner ears, crisp white/gray typography, cursor-only hover
 //! feedback (no icon scaling on hover), and real-time audio-reactive sound waves.
 
+use ailan_core::clock::{fmt_hms, fmt_stopwatch};
 use ailan_core::i18n::{short_date, t, Key, Lang};
 use ailan_core::settings::Tab;
 use ailan_core::state::{BannerIcon, Collapsed, OsdKind};
@@ -66,6 +67,7 @@ const TODO_ROWS: usize = 3;
 pub fn collapsed_size(mode: Collapsed) -> (f32, f32) {
     match mode {
         Collapsed::Minimal | Collapsed::Media | Collapsed::Timer | Collapsed::Todo => (150.0, 30.0),
+        Collapsed::Countdown | Collapsed::Stopwatch => (150.0, 30.0),
         // Alerts stay a slim one-line pill instead of a big card.
         Collapsed::Osd => (240.0, 34.0),
         Collapsed::Banner => (250.0, 34.0),
@@ -345,6 +347,26 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
             cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, alpha);
             draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
+        Collapsed::Countdown => {
+            let cd = &st.countdown;
+            let (rx, r) = (p.x + 20.0, 5.4);
+            cv.stroke_circle(rx, cy, r, 2.2, WHITE, 0.24);
+            cv.stroke_arc(rx, cy, r, -90.0, (1.0 - cd.progress(v.now)) * 360.0, 2.2, WHITE, 0.95);
+            let alpha = if cd.is_running() { 0.98 } else { 0.62 };
+            cv.text(&fmt_hms(cd.remaining(v.now)), Font::text(14.5, 700, Align::Center), p, WHITE, alpha);
+            cv.glyph(G_TIMER, 10.0, Rect::new(p.right() - 30.0, cy - 9.0, 18.0, 18.0), WHITE, 0.7);
+        }
+        Collapsed::Stopwatch => {
+            let sw = &st.stopwatch;
+            // Pulsing-free "recording" dot while running.
+            cv.fill_circle(p.x + 20.0, cy, 3.6, WHITE, if sw.is_running() { 0.95 } else { 0.4 });
+            let e = sw.elapsed(v.now);
+            // Whole seconds on the island (it only wakes once per second).
+            let label = fmt_stopwatch(e - e % 1000);
+            let label = label.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(label);
+            let alpha = if sw.is_running() { 0.98 } else { 0.62 };
+            cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, alpha);
+        }
         Collapsed::Todo => {
             // Today's progress: done / total.
             let today = st.data.todos.today_items(v.now, st.offset_min);
@@ -385,6 +407,8 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
                 BannerIcon::Reminder => (G_BELL, 360.0),
                 BannerIcon::Focus => (G_TIMER, 360.0),
                 BannerIcon::Break => (G_MOON, 360.0),
+                BannerIcon::Alarm => (G_BELL, 360.0),
+                BannerIcon::TimerDone => (G_TIMER, 360.0),
             };
             let (gx, r) = (p.x + 20.0, 8.0);
             cv.stroke_circle(gx, cy, r, 2.0, WHITE, 0.22);
@@ -394,7 +418,7 @@ fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>)
             // One line: reminders show the task itself, other alerts their title.
             let line = if b.icon == BannerIcon::Reminder { b.body.as_str() } else { b.title.as_str() };
             let mut right = p.right() - 10.0;
-            if b.todo_id.is_some() {
+            if b.todo_id.is_some() || b.alarm_id.is_some() {
                 // Compact actions: snooze 5 min and done.
                 let done_r = Rect::new(right - 24.0, cy - 11.0, 24.0, 22.0);
                 let h_done = hover_amt(v, Action::CompleteBanner);

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::clock::{Alarms, WorldClock};
 use crate::i18n::Lang;
 use crate::timer::Durations;
 use crate::todo::Todos;
@@ -76,6 +77,8 @@ impl Settings {
 #[serde(default)]
 pub struct Data {
     pub todos: Todos,
+    pub alarms: Alarms,
+    pub world_clocks: Vec<WorldClock>,
     /// Local day number `focus_day` refers to.
     pub focus_day: i64,
     pub focus_today: u32,

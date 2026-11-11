@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::clock::{Countdown, Stopwatch};
 use crate::event::{AppEvent, Artwork, Battery, MediaInfo, Network};
 use crate::i18n::{t, Key, Lang};
 use crate::settings::{Data, Settings, Tab};
@@ -11,6 +12,8 @@ use crate::timer::{Phase, Pomodoro};
 pub const OSD_MS: i64 = 1_500;
 pub const BANNER_MS: i64 = 4_000;
 pub const REMINDER_BANNER_MS: i64 = 25_000;
+/// Alarms and finished timers keep ringing on the island for a minute.
+pub const ALARM_BANNER_MS: i64 = 60_000;
 pub const SAVE_DEBOUNCE_MS: i64 = 1_000;
 pub const LOW_BATTERY: u8 = 20;
 
@@ -36,6 +39,8 @@ pub enum BannerIcon {
     Reminder,
     Focus,
     Break,
+    Alarm,
+    TimerDone,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +50,8 @@ pub struct Banner {
     pub body: String,
     pub until: i64,
     pub todo_id: Option<u64>,
+    /// Set when the banner is a ringing alarm (snooze / dismiss act on it).
+    pub alarm_id: Option<u64>,
 }
 
 /// What the collapsed notch is showing, in priority order. With nothing going on the
@@ -54,6 +61,8 @@ pub enum Collapsed {
     Osd,
     Banner,
     Timer,
+    Countdown,
+    Stopwatch,
     Media,
     Todo,
     Minimal,
@@ -86,6 +95,10 @@ pub struct AppState {
     pub audio_device: Option<(String, bool)>,
 
     pub pomodoro: Pomodoro,
+    pub countdown: Countdown,
+    pub stopwatch: Stopwatch,
+    /// UTC offsets (minutes) of `data.world_clocks`, refreshed by the shell (DST-aware).
+    pub world_offsets: Vec<Option<i32>>,
     pub osd: Option<Osd>,
     pub banner: Option<Banner>,
 
@@ -109,6 +122,9 @@ impl AppState {
             network: Network::default(),
             audio_device: None,
             pomodoro,
+            countdown: Countdown::default(),
+            stopwatch: Stopwatch::default(),
+            world_offsets: Vec::new(),
             osd: None,
             banner: None,
             save_due: None,
@@ -139,25 +155,31 @@ impl AppState {
             body: body.into(),
             until,
             todo_id,
+            alarm_id: None,
         });
     }
 
     pub fn snooze_banner(&mut self, minutes: u32, now: i64) {
-        if let Some(b) = &self.banner {
-            if let Some(id) = b.todo_id {
+        let ids = self.banner.as_ref().map(|b| (b.todo_id, b.alarm_id));
+        if let Some((todo, alarm)) = ids {
+            if let Some(id) = todo {
                 self.data.todos.snooze(id, now, minutes);
+                self.mark_data_dirty(now);
+            }
+            if let Some(id) = alarm {
+                self.data.alarms.snooze(id, now, minutes);
                 self.mark_data_dirty(now);
             }
         }
         self.banner = None;
     }
 
+    /// "Done" on a banner: completes the reminder's task; for an alarm it just stops ringing.
     pub fn complete_banner(&mut self, now: i64) {
-        if let Some(b) = &self.banner {
-            if let Some(id) = b.todo_id {
-                self.data.todos.toggle(id, now, self.offset_min);
-                self.mark_data_dirty(now);
-            }
+        let todo = self.banner.as_ref().and_then(|b| b.todo_id);
+        if let Some(id) = todo {
+            self.data.todos.toggle(id, now, self.offset_min);
+            self.mark_data_dirty(now);
         }
         self.banner = None;
     }
@@ -293,6 +315,21 @@ impl AppState {
             self.banner(icon, "Ailan", body, now + BANNER_MS);
             out.push(Notification { title: "Ailan".into(), body: body.into() });
         }
+        let rang = self.data.alarms.take_due(now, self.offset_min);
+        if let Some((id, label)) = rang.first() {
+            self.mark_data_dirty(now);
+            let title = if label.is_empty() { t(lang, Key::AlarmTitle).to_string() } else { label.clone() };
+            self.banner(BannerIcon::Alarm, title.clone(), t(lang, Key::AlarmTitle), now + ALARM_BANNER_MS);
+            if let Some(b) = &mut self.banner {
+                b.alarm_id = Some(*id);
+            }
+            out.push(Notification { title: t(lang, Key::AlarmTitle).into(), body: title });
+        }
+        if self.countdown.poll(now) {
+            let body = t(lang, Key::TimerDone);
+            self.banner(BannerIcon::TimerDone, body, body, now + ALARM_BANNER_MS);
+            out.push(Notification { title: t(lang, Key::ClockTimer).into(), body: body.into() });
+        }
         let due = self.data.todos.take_due(now);
         if !due.is_empty() {
             self.mark_data_dirty(now);
@@ -322,7 +359,18 @@ impl AppState {
         if self.banner.as_ref().is_some_and(|b| b.until > now) {
             return Collapsed::Banner;
         }
-        match self.primary_activity(now) {
+        let primary = self.primary_activity(now);
+        if primary == Some(Tab::Focus) {
+            return Collapsed::Timer;
+        }
+        // Clock tools sit right below Focus.
+        if self.countdown.is_active() {
+            return Collapsed::Countdown;
+        }
+        if self.stopwatch.is_active() {
+            return Collapsed::Stopwatch;
+        }
+        match primary {
             Some(Tab::Focus) => Collapsed::Timer,
             Some(Tab::Music) => Collapsed::Media,
             Some(Tab::Todo) => Collapsed::Todo,
@@ -428,6 +476,34 @@ mod tests {
         // Session reset → back to Music.
         s.pomodoro.reset();
         assert_eq!(s.collapsed(0), Collapsed::Media);
+    }
+
+    #[test]
+    fn clock_tools_rank_below_focus_and_ring_as_banners() {
+        let mut s = state();
+        s.apply(AppEvent::Media(Some(media("t", true))), 0);
+        s.stopwatch.toggle(0);
+        assert_eq!(s.collapsed(0), Collapsed::Stopwatch, "above music");
+        s.countdown = Countdown::new(MINUTE);
+        s.countdown.toggle(0);
+        assert_eq!(s.collapsed(0), Collapsed::Countdown, "timer above stopwatch");
+        s.pomodoro.start(0);
+        assert_eq!(s.collapsed(0), Collapsed::Timer, "focus still wins");
+        s.pomodoro.reset();
+
+        let notes = s.tick(MINUTE);
+        assert_eq!(s.banner.as_ref().map(|b| b.icon), Some(BannerIcon::TimerDone));
+        assert_eq!(notes.len(), 1);
+        assert_eq!(s.collapsed(MINUTE), Collapsed::Banner);
+
+        // Alarm at 00:02 local (offset 0) rings and can be snoozed from the banner.
+        let id = s.data.alarms.add(0, 2, "wake".into(), 0);
+        s.banner = None;
+        s.tick(2 * MINUTE);
+        let b = s.banner.clone().unwrap();
+        assert_eq!((b.icon, b.alarm_id), (BannerIcon::Alarm, Some(id)));
+        s.snooze_banner(5, 2 * MINUTE);
+        assert_eq!(s.data.alarms.next_due(2 * MINUTE, 0), Some(7 * MINUTE));
     }
 
     #[test]

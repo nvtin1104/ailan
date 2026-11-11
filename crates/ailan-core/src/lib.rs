@@ -7,6 +7,7 @@
 
 pub mod anim;
 pub mod brief;
+pub mod clock;
 pub mod command;
 pub mod event;
 pub mod i18n;

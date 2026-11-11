@@ -51,6 +51,8 @@ const T_HOVER: usize = 2;
 const T_COLLAPSE: usize = 3;
 const T_STATS: usize = 4;
 const T_AUDIO: usize = 5;
+/// Hub refresh while a live clock tool is on screen (stopwatch, timer, world clock).
+const T_HUB: usize = 6;
 
 const HOVER_INTENT_MS: u32 = 95;
 const COLLAPSE_DELAY_MS: u32 = 340;
@@ -122,6 +124,9 @@ pub struct App {
     origin: (i32, i32),
     /// Hub → island flight overlay, and when the last one landed (for the glow).
     flight: Option<crate::platform::flight::Flight>,
+    tz: crate::platform::tz::TzCache,
+    /// Current `T_HUB` interval in ms (0 = off).
+    hub_timer_ms: u32,
     landed_at: Option<Instant>,
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
@@ -216,6 +221,8 @@ impl App {
                 .map_err(|e| log::warn!("flight overlay unavailable: {e}"))
                 .ok(),
             landed_at: None,
+            tz: Default::default(),
+            hub_timer_ms: 0,
             hidden: false,
             art: None,
             scale: 1.0,
@@ -383,6 +390,7 @@ impl App {
             // Drop the whole D3D/D2D/DComp stack (brushes, gradients, text formats) while
             // hidden; it is rebuilt on the next open.
             self.hub_gfx = None;
+            self.sync_hub_timer();
             self.save(true);
         }
     }
@@ -430,6 +438,37 @@ impl App {
         self.arm_timer(now);
         self.sync_audio_timer();
         self.sync_raw_mouse();
+        self.refresh_world_offsets(now);
+        self.sync_hub_timer();
+    }
+
+    /// Run `T_HUB` only while the hub shows something that changes by itself.
+    fn sync_hub_timer(&mut self) {
+        let st = &self.state;
+        let on_clock = self.hub_open && self.hub_ctrl.active_page == HubPage::Reminders;
+        let want = match (on_clock, self.hub_ctrl.clock_tab) {
+            (true, 3) if st.stopwatch.is_running() => 100,
+            (true, 2) if st.countdown.is_running() => 250,
+            (true, 4) => 1000,
+            _ => 0,
+        };
+        if want == self.hub_timer_ms {
+            return;
+        }
+        self.hub_timer_ms = want;
+        unsafe {
+            if want == 0 {
+                let _ = KillTimer(Some(self.hub_hwnd), T_HUB);
+            } else {
+                SetTimer(Some(self.hub_hwnd), T_HUB, want, None);
+            }
+        }
+    }
+
+    /// DST-aware offsets for the world clock (cached zone lookups, cheap per call).
+    fn refresh_world_offsets(&mut self, now: i64) {
+        let offs: Vec<Option<i32>> = self.state.data.world_clocks.iter().map(|w| self.tz.offset_min(&w.tz, now)).collect();
+        self.state.world_offsets = offs;
     }
 
     // ---- idle eyes follow the pointer -------------------------------------------------
@@ -786,6 +825,7 @@ impl App {
             }
             HubAction::SelectPage(page) => {
                 self.hub_ctrl.select_page(page);
+                self.sync_hub_timer();
                 self.hub_needs_draw = true;
                 return;
             }
@@ -840,6 +880,93 @@ impl App {
                     if let Some((g, tint)) = flight {
                         self.launch_flight(g, tint);
                     }
+                }
+            }
+            HubAction::SetClockTab(tab) => {
+                self.hub_ctrl.set_clock_tab(tab as usize);
+                self.sync_hub_timer();
+                self.hub_needs_draw = true;
+                return;
+            }
+            HubAction::SubmitField(Field::Alarm) => {
+                let input = self.hub_ctrl.take_field(Field::Alarm);
+                let plan = ailan_core::command::parse_command(&input);
+                if let Some((h, m)) = plan.time {
+                    use ailan_core::reminder::Repeat;
+                    let days = match plan.repeat {
+                        Repeat::Daily => ailan_core::clock::EVERY_DAY,
+                        Repeat::Weekdays => ailan_core::clock::WEEKDAYS,
+                        Repeat::Weekly(mask) => mask,
+                        Repeat::None => plan.weekday.map_or(0, |d| 1u8 << d),
+                    };
+                    let label: String = plan.title.chars().take(MAX_TEXT).collect();
+                    self.state.data.alarms.add(h as u8, m as u8, label, days);
+                    self.state.mark_data_dirty(now);
+                    self.launch_flight(ui::G_BELL, FLY_REMIND);
+                } else {
+                    // No time recognised: keep the text so it can be fixed.
+                    self.hub_ctrl.alarm_input = input;
+                    self.hub_ctrl.focus = Some(Field::Alarm);
+                }
+            }
+            HubAction::AlarmToggle(id) => {
+                self.state.data.alarms.toggle(id);
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::AlarmShift(id, mins) => {
+                self.state.data.alarms.shift(id, mins as i32);
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::AlarmDay(id, d) => {
+                self.state.data.alarms.toggle_day(id, d);
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::AlarmDelete(id) => {
+                self.state.data.alarms.remove(id);
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::CountdownToggle => {
+                let was = self.state.countdown.is_running();
+                self.state.countdown.toggle(now);
+                if !was && self.state.countdown.is_running() {
+                    self.launch_flight(ui::G_TIMER, FLY_REMIND);
+                }
+            }
+            HubAction::CountdownReset => self.state.countdown.reset(),
+            HubAction::CountdownSet(sec) => {
+                if self.state.countdown.is_active() {
+                    self.state.countdown.reset();
+                }
+                self.state.countdown.set_duration(sec as i64 * 1000);
+            }
+            HubAction::CountdownAdd(sec) => {
+                let ms = sec as i64 * 1000;
+                if ms < 0 && !self.state.countdown.is_active() {
+                    let d = (self.state.countdown.duration + ms).max(60_000);
+                    self.state.countdown.set_duration(d);
+                } else if ms < 0 {
+                    // Never drop below one second while running/paused.
+                    let rem = self.state.countdown.remaining(now);
+                    self.state.countdown.add(now, ms.max(1000 - rem));
+                } else {
+                    self.state.countdown.add(now, ms);
+                }
+            }
+            HubAction::StopwatchToggle => self.state.stopwatch.toggle(now),
+            HubAction::StopwatchLap => self.state.stopwatch.lap(now),
+            HubAction::StopwatchReset => self.state.stopwatch.reset(),
+            HubAction::WorldAdd(i) => {
+                if let Some((city, tz)) = ailan_core::clock::CITY_PRESETS.get(i as usize) {
+                    if !self.state.data.world_clocks.iter().any(|w| w.tz == *tz) {
+                        self.state.data.world_clocks.push(ailan_core::clock::WorldClock { city: (*city).into(), tz: (*tz).into() });
+                        self.state.mark_data_dirty(now);
+                    }
+                }
+            }
+            HubAction::WorldRemove(i) => {
+                if (i as usize) < self.state.data.world_clocks.len() {
+                    self.state.data.world_clocks.remove(i as usize);
+                    self.state.mark_data_dirty(now);
                 }
             }
             HubAction::UseExample(i) => {
@@ -924,13 +1051,22 @@ impl App {
             }
             HubAction::SetPomoWork(min) => {
                 self.state.settings.durations.focus_min = min as u32;
-                self.state.pomodoro.durations.focus_min = min as u32;
+                let d = self.state.settings.durations;
+                self.state.pomodoro.set_durations(d);
                 self.state.mark_settings_dirty(now);
             }
             HubAction::SetPomoBreak(min) => {
                 self.state.settings.durations.short_min = min as u32;
-                self.state.pomodoro.durations.short_min = min as u32;
+                let d = self.state.settings.durations;
+                self.state.pomodoro.set_durations(d);
                 self.state.mark_settings_dirty(now);
+            }
+            HubAction::AdjustPomo(field, delta) => {
+                if field.apply(&mut self.state.settings.durations, delta) {
+                    let d = self.state.settings.durations;
+                    self.state.pomodoro.set_durations(d);
+                    self.state.mark_settings_dirty(now);
+                }
             }
             HubAction::MediaPlayPause | HubAction::MediaToggle => {
                 self.media.send(MediaCmd::TogglePlayPause);
@@ -967,8 +1103,9 @@ impl App {
         let now = sys::now_ms();
         let lang = self.state.lang();
         for n in self.state.tick(now) {
-            let is_reminder = n.title == t(lang, Key::Reminder);
-            if is_reminder || self.hidden {
+            // Reminders, alarms and finished timers always raise a Windows toast (with sound).
+            let urgent = [Key::Reminder, Key::AlarmTitle, Key::ClockTimer].iter().any(|k| n.title == t(lang, *k));
+            if urgent || self.hidden {
                 self.tray.notify(&n.title, &n.body);
             } else {
                 unsafe {
@@ -1024,6 +1161,7 @@ impl App {
                     body: "A living monochrome notch for Windows · native Rust".into(),
                     until: now + 5_000,
                     todo_id: None,
+                    alarm_id: None,
                 });
             }
             Some(MenuCmd::Exit) => unsafe {
@@ -1301,6 +1439,14 @@ impl App {
                         }
                     }
                 }
+                return Some(LRESULT(0));
+            }
+            WM_TIMER if wparam.0 == T_HUB => {
+                let now = sys::now_ms();
+                if self.state.world_offsets.len() != self.state.data.world_clocks.len() || self.hub_ctrl.clock_tab == 4 {
+                    self.refresh_world_offsets(now);
+                }
+                self.hub_needs_draw = true;
                 return Some(LRESULT(0));
             }
             WM_ERASEBKGND => {

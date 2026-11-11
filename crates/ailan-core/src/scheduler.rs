@@ -25,6 +25,8 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
     // Always-on, even when hidden: timers, reminders, saves.
     add(s.pomodoro.ends_at());
     add(s.data.todos.next_due());
+    add(s.data.alarms.next_due(now, s.offset_min));
+    add(s.countdown.ends_at());
     add(s.save_due());
 
     if !view.hidden {
@@ -51,6 +53,16 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
                 let r = rem % time::MINUTE;
                 add(Some(now + if r == 0 { time::MINUTE } else { r }));
             }
+        }
+
+        // Countdown / stopwatch on the collapsed island show seconds.
+        let ticking = match s.collapsed(now) {
+            Collapsed::Countdown => s.countdown.is_running(),
+            Collapsed::Stopwatch => s.stopwatch.is_running(),
+            _ => false,
+        };
+        if ticking {
+            add(Some(now + 1000 - now.rem_euclid(1000)));
         }
 
         if view.expanded && view.tab == Tab::Music && s.media.as_ref().is_some_and(|m| m.playing) {
@@ -121,6 +133,17 @@ mod tests {
         );
         assert_eq!(next_deadline(&s, 10, view(false, Tab::Music)), None);
         assert_eq!(next_deadline(&s, 10, view(true, Tab::Music)), Some(1010));
+    }
+
+    #[test]
+    fn alarms_and_timers_wake_even_when_hidden_and_tick_seconds_when_shown() {
+        let mut s = AppState::new(Settings::default(), Data::default(), 0);
+        s.data.alarms.add(0, 3, String::new(), 0);
+        let hidden = View { expanded: false, tab: Tab::Music, hidden: true };
+        assert_eq!(next_deadline(&s, 0, hidden), Some(3 * MINUTE));
+        s.countdown.toggle(0); // 5 min default
+        assert_eq!(next_deadline(&s, 0, hidden), Some(3 * MINUTE));
+        assert_eq!(next_deadline(&s, 1_500, view(false, Tab::Music)), Some(2_000), "per-second while shown");
     }
 
     #[test]

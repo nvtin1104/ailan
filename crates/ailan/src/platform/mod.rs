@@ -12,6 +12,7 @@ pub mod network;
 pub mod power;
 pub mod sys;
 pub mod tray;
+pub mod tz;
 
 use std::sync::mpsc::Sender;
 

@@ -27,7 +27,7 @@ pub const FULL_HEIGHT: i32 = 680;
 
 pub const TITLE_H: f32 = 44.0;
 pub const SIDEBAR_W: f32 = 220.0;
-const NAV_Y0: f32 = 128.0;
+const NAV_Y0: f32 = 62.0;
 const NAV_STEP: f32 = 42.0;
 const NAV_H: f32 = 38.0;
 const DOCK_H: f32 = 50.0;
@@ -61,6 +61,10 @@ pub struct HubController {
     pub command: String,
     pub search: String,
     pub copilot: String,
+    pub alarm_input: String,
+    /// Reminders page tab: 0 reminders, 1 alarms, 2 timer, 3 stopwatch, 4 world clock.
+    pub clock_tab: usize,
+    clock_ind: Indicator,
     pub todo_filter: TodoFilter,
     /// Collapsed reminder buckets (Overdue, Today, Tomorrow, Week, Later).
     pub collapsed: [bool; 5],
@@ -99,6 +103,9 @@ impl HubController {
             command: String::new(),
             search: String::new(),
             copilot: String::new(),
+            alarm_input: String::new(),
+            clock_tab: 0,
+            clock_ind: Indicator::new(0),
             todo_filter: TodoFilter::All,
             collapsed: [false; 5],
             hits: Vec::new(),
@@ -139,6 +146,18 @@ impl HubController {
         self.nav.go(nav_index(page));
         self.scroll_to(0.0, true);
         if self.focus != Some(Field::Command) {
+            self.focus = None;
+        }
+    }
+
+    pub fn set_clock_tab(&mut self, tab: usize) {
+        if tab != self.clock_tab {
+            self.restart_fade();
+        }
+        self.clock_tab = tab.min(4);
+        self.clock_ind.go(self.clock_tab);
+        self.scroll_to(0.0, true);
+        if matches!(self.focus, Some(Field::Capture | Field::Alarm)) {
             self.focus = None;
         }
     }
@@ -185,6 +204,7 @@ impl HubController {
     pub fn animating(&self) -> bool {
         !(self.nav.is_settled()
             && self.filter_ind.is_settled()
+            && self.clock_ind.is_settled()
             && self.fade.is_settled()
             && self.scroll.is_settled()
             && self.pops.is_empty())
@@ -199,6 +219,7 @@ impl HubController {
         if self.reduce_motion {
             self.nav.snap();
             self.filter_ind.snap();
+            self.clock_ind.snap();
             self.fade.snap();
             self.scroll.snap();
             self.pops.clear();
@@ -206,6 +227,7 @@ impl HubController {
         }
         self.nav.step(dt);
         self.filter_ind.step(dt);
+        self.clock_ind.step(dt);
         self.fade.step(dt);
         self.scroll.step(dt);
         self.pops.retain_mut(|p| !p.step(dt));
@@ -257,6 +279,7 @@ impl HubController {
             Field::Command => &mut self.command,
             Field::Search => &mut self.search,
             Field::Copilot => &mut self.copilot,
+            Field::Alarm => &mut self.alarm_input,
         }
     }
 
@@ -409,11 +432,6 @@ impl HubController {
         cv.text("AiLan", Font::text(15.0, 700, Align::Left), Rect::new(52.0, 9.0, 140.0, 18.0), TEXT_HERO, 1.0);
         cv.text("Personal Hub", Font::text(11.0, 450, Align::Left), Rect::new(52.0, 26.0, 140.0, 14.0), TEXT_SECTION, 1.0);
 
-        // Island status (read-only mirror of what the notch shows)
-        let isl = Rect::new(12.0, 54.0, SIDEBAR_W - 24.0, 60.0);
-        self.spots.push(isl);
-        draw_specular_card(cv, isl, RADIUS_CARD, 0.0, self.mouse);
-        draw_island_mini(cv, st, now, isl);
 
         // Navigation with sliding indicator
         let ind_y = NAV_Y0 + self.nav.pos() * NAV_STEP;
@@ -600,6 +618,9 @@ impl HubController {
                 copilot: &self.copilot,
                 filter: self.todo_filter,
                 filter_pos: self.filter_ind.pos(),
+                alarm_input: &self.alarm_input,
+                clock_tab: self.clock_tab,
+                clock_tab_pos: self.clock_ind.pos(),
                 scroll,
                 collapsed: self.collapsed,
                 compact: self.is_compact,
@@ -648,42 +669,6 @@ impl HubController {
         }
         self.spots.retain(|s| s.intersect(&r).is_some() || s.x < SIDEBAR_W);
     }
-}
-
-/// Mini Dynamic Island mirror: what the notch is showing right now.
-fn draw_island_mini(cv: &mut Canvas, st: &AppState, now: i64, card: Rect) {
-    let lang = st.lang();
-    draw_section_header(cv, Rect::new(card.x + 14.0, card.y + 8.0, card.w - 40.0, 16.0), "Dynamic Island");
-    let pill = Rect::new(card.x + 12.0, card.y + 28.0, card.w - 24.0, 22.0);
-    cv.fill_round(pill, 11.0, 0x000000, 1.0);
-    cv.hairline_round(pill, 11.0, WHITE, 0.14);
-    let p = &st.pomodoro;
-    let live;
-    if p.is_active() {
-        live = true;
-        let (_, tint) = phase_label(lang, p.phase);
-        cv.glyph(G_TIMER, 10.0, Rect::new(pill.x + 6.0, pill.y, 18.0, pill.h), tint, 1.0);
-        let time = fmt_duration(p.remaining(now));
-        cv.text_styled(&time, Font::text(11.0, 650, Align::Left), Rect::new(pill.x + 26.0, pill.y, 60.0, pill.h), TEXT_HERO, 1.0, TextStyle::TABULAR);
-        draw_progress_ring(cv, pill.right() - 12.0, pill.y + 11.0, 5.5, 2.0, p.progress(now), tint, false);
-    } else if let Some(m) = st.media.as_ref().filter(|m| m.playing) {
-        live = true;
-        cv.glyph(G_MUSIC, 10.0, Rect::new(pill.x + 6.0, pill.y, 18.0, pill.h), ACCENT_PRIMARY_HI, 1.0);
-        cv.text(&m.title, Font::text(11.0, 600, Align::Left), Rect::new(pill.x + 26.0, pill.y, pill.w - 54.0, pill.h), TEXT_HERO, 1.0);
-        for (i, bh) in [6.0f32, 10.0, 7.0].iter().enumerate() {
-            let bx = pill.right() - 20.0 + i as f32 * 4.0;
-            cv.fill_round(Rect::new(bx, pill.y + 11.0 - bh * 0.5, 2.0, *bh), 1.0, ACCENT_PRIMARY_HI, 0.9);
-        }
-    } else {
-        live = false;
-        cv.fill_circle(pill.x + pill.w * 0.5, pill.y + 11.0, 2.5, TEXT_SECTION, 0.9);
-        cv.text(t(lang, Key::IdleLabel), Font::text(10.5, 500, Align::Left), Rect::new(pill.x + pill.w * 0.5 + 8.0, pill.y, 80.0, pill.h), TEXT_SECTION, 1.0);
-    }
-    let (dot, a) = if live { (ACCENT_MINT, 1.0) } else { (TEXT_SECTION, 0.7) };
-    if live {
-        cv.fill_circle_radial(card.right() - 16.0, card.y + 16.0, 8.0, GLOW_MINT, 1.0);
-    }
-    cv.fill_circle(card.right() - 16.0, card.y + 16.0, 3.0, dot, a);
 }
 
 fn phase_label(lang: ailan_core::i18n::Lang, phase: Phase) -> (&'static str, u32) {

@@ -25,9 +25,19 @@ fn bucket_index(b: DayBucket) -> usize {
 }
 
 pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
+    let y = crate::hub::pages::clock::draw_tabs(cv, cx, r, r.y - cx.scroll);
+    match cx.clock_tab {
+        1 => crate::hub::pages::clock::draw_alarms(cv, cx, r, y),
+        2 => crate::hub::pages::clock::draw_timer(cv, cx, r, y),
+        3 => crate::hub::pages::clock::draw_stopwatch(cv, cx, r, y),
+        4 => crate::hub::pages::clock::draw_world(cv, cx, r, y),
+        _ => draw_reminders(cv, cx, r, y),
+    }
+}
+
+fn draw_reminders(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
     let lang = cx.lang();
     let st = cx.st;
-    let mut y = r.y - cx.scroll;
 
     capture_bar(cv, cx, Rect::new(r.x, y, r.w, 44.0), t(lang, Key::NewReminderPlaceholder));
     y += 44.0 + 20.0;
