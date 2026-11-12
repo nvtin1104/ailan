@@ -196,19 +196,19 @@ impl AppState {
         }
     }
 
-    /// Whether an activity appears as a page in the Hover (Expanded) UI. To-do is always
-    /// there so a task can be typed straight into the island.
-    pub fn is_activity_visible_on_hover(&self, tab: Tab) -> bool {
+    /// Whether an activity appears as a page in the Hover (Expanded) UI.
+    /// To-do is only shown while there are unfinished tasks for today.
+    pub fn is_activity_visible_on_hover(&self, tab: Tab, now: i64) -> bool {
         match tab {
             Tab::Music => self.media.as_ref().is_some_and(|m| m.playing || !m.title.is_empty()),
             Tab::Focus => self.pomodoro.is_active(),
-            Tab::Todo => true,
+            Tab::Todo => !self.data.todos.today_pending(now, self.offset_min).is_empty(),
         }
     }
 
     /// Activities visible in the Hover UI, in fixed priority order.
-    pub fn hover_activities(&self) -> Vec<Tab> {
-        ACTIVITY_ORDER.into_iter().filter(|&t| self.is_activity_visible_on_hover(t)).collect()
+    pub fn hover_activities(&self, now: i64) -> Vec<Tab> {
+        ACTIVITY_ORDER.into_iter().filter(|&t| self.is_activity_visible_on_hover(t, now)).collect()
     }
 
     /// Live activities in fixed priority order.
@@ -448,7 +448,7 @@ mod tests {
     fn idle_rests_in_minimal() {
         let s = state();
         assert_eq!(s.collapsed(0), Collapsed::Minimal);
-        assert_eq!(s.hover_activities(), vec![Tab::Todo], "to-do is always reachable on hover");
+        assert_eq!(s.hover_activities(0), Vec::<Tab>::new(), "to-do is hidden when empty");
         assert!(!s.has_running_activity(0));
     }
 
@@ -461,11 +461,11 @@ mod tests {
 
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
         assert_eq!(s.collapsed(0), Collapsed::Media);
-        assert_eq!(s.hover_activities(), vec![Tab::Music, Tab::Todo]);
+        assert_eq!(s.hover_activities(0), vec![Tab::Music, Tab::Todo]);
 
         // Focus takes over for the whole session — no alternating with Music.
         s.pomodoro.start(0);
-        assert_eq!(s.hover_activities(), vec![Tab::Focus, Tab::Music, Tab::Todo]);
+        assert_eq!(s.hover_activities(0), vec![Tab::Focus, Tab::Music, Tab::Todo]);
         for t in [0, 5_000, 30_000, 60_000, 65_000] {
             assert_eq!(s.collapsed(t), Collapsed::Timer, "at {t}");
         }

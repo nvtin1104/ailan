@@ -191,9 +191,7 @@ pub fn draw(
     draw_glass_card(cv, about_r, RADIUS_CARD, 0.0);
 
     let logo_r = Rect::new(about_r.x + 14.0, about_r.y + 16.0, 42.0, 42.0);
-    cv.fill_round(logo_r, RADIUS_BUTTON, GLASS_SPECULAR, 0.10);
-    cv.hairline_round(logo_r, RADIUS_BUTTON, GLASS_SPECULAR, 0.20);
-    cv.text("✦", Font::text(20.0, 400, Align::Center), logo_r, TEXT_PRIMARY, 1.0);
+    draw_app_logo(cv, logo_r);
 
     let about_info_x = about_r.x + 68.0;
     let about_info_w = about_r.w - 82.0;

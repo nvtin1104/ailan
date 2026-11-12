@@ -698,6 +698,25 @@ impl CheckPop {
     }
 }
 
+/// Render the AiLan app icon (dark squircle + white Dynamic Island pill + `✦` sparkle)
+/// matching `platform::icon_art` for all in-app logo/brand placements.
+pub fn draw_app_logo(cv: &mut Canvas, r: Rect) {
+    let rad = r.w * 0.24;
+    cv.fill_round(r, rad, 0x0E0E0E, 1.0);
+    cv.hairline_round(r, rad, WHITE, 0.18);
+
+    // Upper Dynamic Island pill
+    let pw = r.w * 0.54;
+    let ph = r.h * 0.22;
+    let pill = Rect::new(r.x + (r.w - pw) * 0.5, r.y + r.h * 0.38 - ph * 0.5, pw, ph);
+    cv.fill_round(pill, ph * 0.5, WHITE, 1.0);
+
+    // Lower-right 4-pointed AI sparkle
+    let sp_sz = r.w * 0.40;
+    let sp = Rect::new(r.x + r.w * 0.68 - sp_sz * 0.5, r.y + r.h * 0.70 - sp_sz * 0.5, sp_sz, sp_sz);
+    cv.text("✦", Font::text((r.h * 0.34).max(9.0), 400, Align::Center), sp, WHITE, 1.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

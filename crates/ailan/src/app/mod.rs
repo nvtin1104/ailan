@@ -174,7 +174,7 @@ impl App {
         network::spawn(sink.clone());
 
         let tab = state.settings.tab;
-        let init_pos = visible_index(&state, tab);
+        let init_pos = visible_index(&state, tab, sys::now_ms());
         let mut app = Self {
             hwnd,
             hub_hwnd,
@@ -247,7 +247,7 @@ impl App {
         if let Some(tab) = init.pin_tab {
             app.expanded = true;
             app.tab = tab;
-            app.tab_pos.value = visible_index(&app.state, tab);
+            app.tab_pos.value = visible_index(&app.state, tab, sys::now_ms());
         }
         if init.open_hub {
             app.hub_ctrl.is_compact = init.hub_compact;
@@ -328,20 +328,20 @@ impl App {
             self.mode = self.state.collapsed(now);
         }
 
-        let visible = self.state.hover_activities();
+        let visible = self.state.hover_activities(now);
         if !visible.is_empty() && !visible.contains(&self.tab) {
             self.tab = visible[0];
         }
 
         let (tw, th) = if self.expanded {
-            ui::expanded_size(self.tab)
+            ui::expanded_size(&self.state, self.tab, now)
         } else {
             ui::collapsed_size(self.mode)
         };
         self.w.set_target(tw);
         self.h.set_target(th);
         self.e.set_target(if self.expanded { 1.0 } else { 0.0 });
-        self.tab_pos.set_target(visible_index(&self.state, self.tab));
+        self.tab_pos.set_target(visible_index(&self.state, self.tab, now));
         if self.state.settings.reduce_motion {
             self.w.snap();
             self.h.snap();
@@ -555,8 +555,8 @@ impl App {
 
 }
 
-fn visible_index(st: &AppState, tab: Tab) -> f32 {
-    st.hover_activities()
+fn visible_index(st: &AppState, tab: Tab, now: i64) -> f32 {
+    st.hover_activities(now)
         .iter()
         .position(|&t| t == tab)
         .unwrap_or(0) as f32

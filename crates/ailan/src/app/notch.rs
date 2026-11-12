@@ -76,7 +76,7 @@ impl App {
         }
         let now = sys::now_ms();
         self.expanded = true;
-        let visible = self.state.hover_activities();
+        let visible = self.state.hover_activities(now);
         if !visible.is_empty() {
             let preferred = match self.mode {
                 Collapsed::Timer => Some(Tab::Focus),
@@ -87,7 +87,7 @@ impl App {
             self.tab = preferred
                 .filter(|t| visible.contains(t))
                 .unwrap_or(visible[0]);
-            let idx = visible_index(&self.state, self.tab);
+            let idx = visible_index(&self.state, self.tab, now);
             self.tab_pos.value = idx;
             self.tab_pos.set_target(idx);
         }
@@ -126,14 +126,15 @@ impl App {
     }
 
     pub(super) fn select_tab(&mut self, tab: Tab) {
-        let visible = self.state.hover_activities();
+        let now = sys::now_ms();
+        let visible = self.state.hover_activities(now);
         if !visible.contains(&tab) {
             return;
         }
         if self.tab != tab {
             self.tab = tab;
             self.state.settings.tab = tab;
-            self.state.mark_settings_dirty(sys::now_ms());
+            self.state.mark_settings_dirty(now);
             if tab != Tab::Todo {
                 self.stop_editing();
             }
@@ -142,7 +143,7 @@ impl App {
     }
 
     pub(super) fn slide_activity(&mut self, delta: isize) {
-        let visible = self.state.hover_activities();
+        let visible = self.state.hover_activities(sys::now_ms());
         if visible.len() <= 1 {
             return;
         }

@@ -13,19 +13,13 @@ pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, h
     let lang = st.lang();
     let c = civil(v.now, st.offset_min);
     let playing = st.media.as_ref().is_some_and(|m| m.playing);
-    let compact_layout = p.w < 360.0;
 
     // 1. Shared Top Status Row (y = 18): Battery ring + Date & Time + Home icon + Wave bars.
     let hdr_cy = p.y + 18.0;
-    let ring_x = if compact_layout { p.x + 96.0 } else { p.x + 146.0 };
-    draw_status_ring(cv, st, ring_x, hdr_cy);
-    let mut hx = ring_x + 12.0 + if compact_layout { 0.0 } else { 2.0 };
-    let ds = if compact_layout {
-        short_date(lang, &c)
-    } else {
-        format!("{} {}", short_date(lang, &c), c.year)
-    };
-    let dw = (ds.chars().count() as f32 * 6.5).max(if compact_layout { 58.0 } else { 88.0 });
+    draw_status_ring(cv, st, p.x + 146.0, hdr_cy);
+    let mut hx = p.x + 160.0;
+    let ds = format!("{} {}", short_date(lang, &c), c.year);
+    let dw = (ds.chars().count() as f32 * 6.5).max(88.0);
     cv.text(&ds, Font::text(12.0, 400, Align::Left), Rect::new(hx, p.y + 8.0, dw, 20.0), WHITE, 0.85);
     hx += dw + 4.0;
     let time_s = format!("{:02}:{:02}", c.hour, c.minute);
@@ -34,12 +28,11 @@ pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, h
     // Wave bars and Home icon on the top-right
     let wave_w = 20.0;
     let wave_h = 14.0;
-    let right_pad = if compact_layout { 18.0 } else { 28.0 };
-    let wave_r = Rect::new(p.right() - right_pad - wave_w, hdr_cy - wave_h * 0.5, wave_w, wave_h);
+    let wave_r = Rect::new(p.right() - 28.0 - wave_w, hdr_cy - wave_h * 0.5, wave_w, wave_h);
 
     let home_w = 26.0;
     let home_h = 24.0;
-    let home_gap = if compact_layout { 6.0 } else { 14.0 };
+    let home_gap = 14.0;
     let home_r = Rect::new(wave_r.x - home_gap - home_w, hdr_cy - home_h * 0.5, home_w, home_h);
     let h_home = hover_amt(v, Action::OpenSettings);
     if h_home > 0.01 {
@@ -53,7 +46,7 @@ pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, h
     draw_wave_bars(cv, v, wave_r, playing);
 
     // 2. Visible pages: Focus while a session is on, Music when media is around, To-do always.
-    let visible = st.hover_activities();
+    let visible = st.hover_activities(v.now);
     if visible.is_empty() {
         return;
     }
@@ -69,13 +62,11 @@ pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, h
 
     // 3. Left / Right Slide Arrow Buttons only when > 1 visible activity.
     if visible.len() > 1 {
-        let arrow_y = if compact_layout { p.y + 76.0 } else { p.y + 70.0 };
-        let arrow_l = if compact_layout { p.x + 16.0 } else { p.x + 22.0 };
-        let arrow_r = if compact_layout { p.right() - 16.0 } else { p.x + 395.0 };
+        let arrow_y = if p.h < 100.0 { p.y + 46.0 } else { p.y + 70.0 };
         if active_tab != Tab::Music {
-            draw_arrow_btn(cv, v, hits, arrow_l, arrow_y, true);
+            draw_arrow_btn(cv, v, hits, p.x + 22.0, arrow_y, true);
         }
-        draw_arrow_btn(cv, v, hits, arrow_r, arrow_y, false);
+        draw_arrow_btn(cv, v, hits, p.x + 395.0, arrow_y, false);
     }
 
     // 4. Main Activity Page Content.
@@ -418,7 +409,7 @@ fn draw_focus(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<
     );
 }
 
-// ---- Page 3: To-do (`l-todo` in compact 300×126) --------------------------------
+// ---- Page 3: To-do (`l-todo` in 420×82 when empty, 420×126 with tasks) ----------
 
 fn draw_todo(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
     let lang = st.lang();
@@ -427,22 +418,22 @@ fn draw_todo(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<H
     // Top-left monochrome title: "Todo List"
     cv.text(
         "Todo",
-        Font::text(14.0, 700, Align::Left),
-        Rect::new(p.x + 15.0, p.y + 8.0, 38.0, 20.0),
+        Font::text(15.0, 700, Align::Left),
+        Rect::new(p.x + 15.0, p.y + 9.0, 40.0, 20.0),
         WHITE,
         1.0,
     );
     cv.text(
         "List",
-        Font::text(14.0, 400, Align::Left),
-        Rect::new(p.x + 51.0, p.y + 8.0, 40.0, 20.0),
+        Font::text(15.0, 400, Align::Left),
+        Rect::new(p.x + 53.0, p.y + 9.0, 45.0, 20.0),
         TEXT_SOFT,
         0.95,
     );
 
     // Compact single-column layout: Add Task pill on top, up to TODO_ROWS pending rows below.
-    let inner_x = p.x + 34.0;
-    let inner_w = p.w - 68.0;
+    let inner_x = p.x + 42.0;
+    let inner_w = p.w - 84.0;
     let field = Rect::new(inner_x, p.y + 33.0, inner_w, 25.0);
     if let Some(s) = v.input {
         cv.fill_round(field, 12.5, WHITE, 0.16);
@@ -469,12 +460,12 @@ fn draw_todo(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<H
         hits.push(Hit { rect: field, action: Action::TodoInput });
     }
 
-    let list_r = Rect::new(inner_x, p.y + 63.0, inner_w, 53.0);
+    // Hide the list UI altogether when there are no pending tasks.
     if items.is_empty() {
-        cv.fill_round(Rect::new(list_r.x, list_r.y + 4.0, list_r.w, 40.0), 9.0, WHITE, 0.05);
-        cv.text(t(lang, Key::NoTasks), Font::text(11.5, 400, Align::Center), Rect::new(list_r.x, list_r.y + 4.0, list_r.w, 40.0), WHITE, 0.45);
         return;
     }
+
+    let list_r = Rect::new(inner_x, p.y + 63.0, inner_w, 53.0);
 
     hits.push(Hit { rect: list_r, action: Action::TodoScroll });
     let scroll = v.todo_scroll.min(items.len().saturating_sub(TODO_ROWS));

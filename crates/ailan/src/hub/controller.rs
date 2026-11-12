@@ -426,9 +426,7 @@ impl HubController {
         // Brand
         let tile = Rect::new(16.0, 10.0, 28.0, 28.0);
         cv.fill_circle_radial(tile.x + 14.0, tile.y + 14.0, 30.0, GLOW_ACCENT, 0.5);
-        cv.fill_round_linear(tile, RADIUS_BUTTON, ACCENT_FILL, (tile.x, tile.y), (tile.right(), tile.bottom()), 1.0);
-        cv.hairline_round_linear(tile, RADIUS_BUTTON, RIM_HOT, (tile.x, tile.y), (tile.x, tile.bottom()), 1.0);
-        cv.text("✦", Font::text(14.0, 400, Align::Center), tile, WHITE, 1.0);
+        draw_app_logo(cv, tile);
         cv.text("AiLan", Font::text(15.0, 700, Align::Left), Rect::new(52.0, 9.0, 140.0, 18.0), TEXT_HERO, 1.0);
         cv.text("Personal Hub", Font::text(11.0, 450, Align::Left), Rect::new(52.0, 26.0, 140.0, 14.0), TEXT_SECTION, 1.0);
 
@@ -484,8 +482,7 @@ impl HubController {
 
     fn draw_compact(&mut self, cv: &mut Canvas, st: &AppState, now: i64, w: f32, h: f32, counts: &NavCounts) {
         let tile = Rect::new(12.0, 10.0, 24.0, 24.0);
-        cv.fill_round_linear(tile, RADIUS_BUTTON, ACCENT_FILL, (tile.x, tile.y), (tile.right(), tile.bottom()), 1.0);
-        cv.text("✦", Font::text(12.0, 400, Align::Center), tile, WHITE, 1.0);
+        draw_app_logo(cv, tile);
         cv.text("AiLan", Font::text(13.5, 700, Align::Left), Rect::new(42.0, 10.0, 60.0, 24.0), TEXT_HERO, 1.0);
 
         let bar = Rect::new(100.0, 8.0, (w - 100.0 - 140.0).max(60.0), 28.0);

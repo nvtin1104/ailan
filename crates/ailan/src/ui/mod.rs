@@ -52,18 +52,24 @@ pub const G_HOME: char = '\u{E80F}';
 /// Window width includes room for the expanded notch + its concave ears.
 pub const WIN_W: f32 = 480.0;
 pub const WIN_H: f32 = 152.0;
-/// On-screen size of the expanded island. Its pages are laid out on `expanded_layout(tab)`
-/// and drawn scaled down, so the hover view takes less of the screen.
-pub fn expanded_size(tab: Tab) -> (f32, f32) {
+/// On-screen size of the expanded island. All tabs share the same width (380 DIP)
+/// so switching between Music, Focus, and Todo never jumps horizontally.
+pub fn expanded_size(st: &AppState, tab: Tab, now: i64) -> (f32, f32) {
+    if st.hover_activities(now).is_empty() {
+        return (380.0, 40.0);
+    }
     match tab {
-        Tab::Todo => (272.0, 114.0),
+        Tab::Todo => (380.0, 114.0),
         Tab::Music | Tab::Focus => (380.0, 127.0),
     }
 }
 
-pub(super) fn expanded_layout(tab: Tab) -> (f32, f32) {
+pub(super) fn expanded_layout(st: &AppState, tab: Tab, now: i64) -> (f32, f32) {
+    if st.hover_activities(now).is_empty() {
+        return (420.0, 44.0);
+    }
     match tab {
-        Tab::Todo => (300.0, 126.0),
+        Tab::Todo => (420.0, 126.0),
         Tab::Music | Tab::Focus => (420.0, 140.0),
     }
 }
@@ -240,14 +246,14 @@ pub fn draw(cv: &mut Canvas, st: &AppState, v: &View) -> Vec<Hit> {
     }
     if expanded_alpha > 0.01 {
         cv.alpha = expanded_alpha;
-        let visible = st.hover_activities();
+        let visible = st.hover_activities(v.now);
         let active_tab = if visible.contains(&v.tab) {
             v.tab
         } else {
             visible.first().copied().unwrap_or(v.tab)
         };
-        let exp = expanded_size(active_tab);
-        let lay = expanded_layout(active_tab);
+        let exp = expanded_size(st, active_tab, v.now);
+        let lay = expanded_layout(st, active_tab, v.now);
         // Draw the page layout scaled into the smaller on-screen island, then map
         // its hit rects back to window coordinates.
         let full = pill_rect(exp.0, exp.1);
