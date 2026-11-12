@@ -334,7 +334,7 @@ impl App {
         }
 
         let (tw, th) = if self.expanded {
-            ui::EXPANDED
+            ui::expanded_size(self.tab)
         } else {
             ui::collapsed_size(self.mode)
         };

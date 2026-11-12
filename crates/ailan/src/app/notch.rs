@@ -1,4 +1,4 @@
-﻿//! Notch window interaction: gaze tracking, expand/collapse, text input, and Win32 handle.
+//! Notch window interaction: gaze tracking, expand/collapse, text input, and Win32 handle.
 
 use ailan_core::settings::{HubPage, Tab};
 use ailan_core::state::Collapsed;
@@ -191,7 +191,7 @@ impl App {
             0x0D => {
                 let now = sys::now_ms();
                 if let Some((text, due)) = parse_input(input, now, self.state.offset_min) {
-                    self.state.data.todos.add(text, due);
+                    self.state.data.todos.add_today(text, due, now, self.state.offset_min);
                     self.state.mark_data_dirty(now);
                     input.clear();
                     self.after_change();
@@ -246,11 +246,12 @@ impl App {
             Action::TodoToggle(id) => {
                 self.state.data.todos.toggle(id, now, self.state.offset_min);
                 self.state.mark_data_dirty(now);
+                self.todo_scroll = self.todo_scroll.min(ui::max_todo_scroll(&self.state, now));
             }
             Action::TodoDelete(id) => {
                 self.state.data.todos.remove(id);
                 self.state.mark_data_dirty(now);
-                self.todo_scroll = self.todo_scroll.min(ui::max_todo_scroll(&self.state));
+                self.todo_scroll = self.todo_scroll.min(ui::max_todo_scroll(&self.state, now));
             }
             Action::TodoScroll => {}
             Action::SnoozeBanner(mins) => {
@@ -445,7 +446,7 @@ impl App {
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16;
                 if self.expanded && self.tab == Tab::Todo {
-                    let max = ui::max_todo_scroll(&self.state);
+                    let max = ui::max_todo_scroll(&self.state, sys::now_ms());
                     self.todo_scroll = if delta < 0 { (self.todo_scroll + 1).min(max) } else { self.todo_scroll.saturating_sub(1) };
                     self.needs_draw = true;
                 } else if self.expanded {

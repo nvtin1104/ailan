@@ -52,10 +52,21 @@ pub const G_HOME: char = '\u{E80F}';
 /// Window width includes room for the expanded notch + its concave ears.
 pub const WIN_W: f32 = 480.0;
 pub const WIN_H: f32 = 152.0;
-/// On-screen size of the expanded island. Its pages are laid out on a 420×140 grid
-/// (`EXPANDED_LAYOUT`) and drawn scaled down, so the hover view takes less of the screen.
-pub const EXPANDED: (f32, f32) = (380.0, 127.0);
-const EXPANDED_LAYOUT: (f32, f32) = (420.0, 140.0);
+/// On-screen size of the expanded island. Its pages are laid out on `expanded_layout(tab)`
+/// and drawn scaled down, so the hover view takes less of the screen.
+pub fn expanded_size(tab: Tab) -> (f32, f32) {
+    match tab {
+        Tab::Todo => (272.0, 114.0),
+        Tab::Music | Tab::Focus => (380.0, 127.0),
+    }
+}
+
+pub(super) fn expanded_layout(tab: Tab) -> (f32, f32) {
+    match tab {
+        Tab::Todo => (300.0, 126.0),
+        Tab::Music | Tab::Focus => (420.0, 140.0),
+    }
+}
 
 const RADIUS_COLLAPSED: f32 = 14.0;
 const RADIUS_EXPANDED: f32 = 29.0;
@@ -63,7 +74,7 @@ const RADIUS_EXPANDED: f32 = 29.0;
 pub const EAR_COLLAPSED: f32 = 10.0;
 pub const EAR_EXPANDED: f32 = 20.0;
 
-pub(super) const TODO_ROWS: usize = 3;
+pub(super) const TODO_ROWS: usize = 2;
 
 pub fn collapsed_size(mode: Collapsed) -> (f32, f32) {
     match mode {
@@ -229,12 +240,20 @@ pub fn draw(cv: &mut Canvas, st: &AppState, v: &View) -> Vec<Hit> {
     }
     if expanded_alpha > 0.01 {
         cv.alpha = expanded_alpha;
-        // Draw the 420×140 page layout scaled into the smaller on-screen island, then map
+        let visible = st.hover_activities();
+        let active_tab = if visible.contains(&v.tab) {
+            v.tab
+        } else {
+            visible.first().copied().unwrap_or(v.tab)
+        };
+        let exp = expanded_size(active_tab);
+        let lay = expanded_layout(active_tab);
+        // Draw the page layout scaled into the smaller on-screen island, then map
         // its hit rects back to window coordinates.
-        let full = pill_rect(EXPANDED.0, EXPANDED.1);
-        let s = EXPANDED.0 / EXPANDED_LAYOUT.0;
+        let full = pill_rect(exp.0, exp.1);
+        let s = exp.0 / lay.0;
         let y_offset = (1.0 - expanded_alpha) * -8.0;
-        let layout = Rect::new(0.0, y_offset / s, EXPANDED_LAYOUT.0, EXPANDED_LAYOUT.1);
+        let layout = Rect::new(0.0, y_offset / s, lay.0, lay.1);
         let mut local = Vec::new();
         cv.set_transform(full.x, full.y, s);
         draw_expanded(cv, st, v, layout, &mut local);
@@ -314,8 +333,8 @@ pub fn hit_test(hits: &[Hit], x: f32, y: f32) -> Option<Action> {
         .map(|h| h.action)
 }
 
-pub fn max_todo_scroll(st: &AppState) -> usize {
-    st.data.todos.items.len().saturating_sub(TODO_ROWS)
+pub fn max_todo_scroll(st: &AppState, now: i64) -> usize {
+    st.data.todos.today_pending(now, st.offset_min).len().saturating_sub(TODO_ROWS)
 }
 
 #[cfg(test)]

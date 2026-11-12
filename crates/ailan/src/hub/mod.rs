@@ -109,6 +109,8 @@ pub enum HubAction {
     DeleteTodo(u64),
     TodoDelete(u64),
     SnoozeTodo(u64, u32),
+    ShiftTodoDate(u64, i32),
+    SetTodoToday(u64),
     SetTodoFilter(TodoFilter),
     FocusOnTodo(u64),
     ToggleBucket(u8),

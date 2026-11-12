@@ -185,6 +185,56 @@ impl Todos {
         self.add_full(text, due, false, Repeat::None, 0)
     }
 
+    /// Add a task that defaults to today's date (`all_day = true` at local midnight)
+    /// when no explicit `due` timestamp is provided.
+    pub fn add_today(&mut self, text: String, due: Option<i64>, now: i64, offset_min: i32) -> u64 {
+        match due {
+            Some(d) => self.add_full(text, Some(d), false, Repeat::None, now),
+            None => self.add_full(
+                text,
+                Some(time::local_midnight(now, offset_min)),
+                true,
+                Repeat::None,
+                now,
+            ),
+        }
+    }
+
+    /// Shift a task's scheduled date by `delta_days` (preserving time-of-day if not all-day).
+    pub fn shift_date(&mut self, id: u64, delta_days: i64, now: i64, offset_min: i32) -> bool {
+        let Some(t) = self.items.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        let base = t
+            .due
+            .unwrap_or_else(|| time::local_midnight(now, offset_min));
+        if t.due.is_none() {
+            t.all_day = true;
+        }
+        t.due = Some(base + delta_days * time::DAY);
+        t.snoozed_until = None;
+        t.notified = false;
+        true
+    }
+
+    /// Move a task's scheduled date to today (preserving time-of-day if it has one).
+    pub fn set_date_today(&mut self, id: u64, now: i64, offset_min: i32) -> bool {
+        let Some(t) = self.items.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        let today_mid = time::local_midnight(now, offset_min);
+        if let Some(d) = t.due.filter(|_| !t.all_day) {
+            let tod = (d - time::local_midnight(d, offset_min)).clamp(0, time::DAY - 1);
+            t.due = Some(today_mid + tod);
+        } else {
+            t.due = Some(today_mid);
+            t.all_day = true;
+        }
+        t.snoozed_until = None;
+        t.notified = false;
+        true
+    }
+
     pub fn add_full(
         &mut self,
         text: String,
@@ -290,23 +340,27 @@ impl Todos {
         out
     }
 
-    /// Filter items for Today view (overdue or due today or without due date, pending first).
+    /// Filter items strictly for Today (`DayBucket::Today` only, pending first).
     pub fn today_items(&self, now: i64, offset_min: i32) -> Vec<&Todo> {
         let mut v: Vec<&Todo> = self
             .items
             .iter()
             .filter(|t| {
-                if let Some(d) = t.snoozed_until.or(t.due) {
-                    let b = day_bucket(d, now, offset_min);
-                    matches!(b, DayBucket::Overdue | DayBucket::Today)
-                } else {
-                    // Task without date appears in today if pending
-                    !t.done
-                }
+                t.snoozed_until
+                    .or(t.due)
+                    .is_some_and(|d| day_bucket(d, now, offset_min) == DayBucket::Today)
             })
             .collect();
         v.sort_by_key(|t| (t.done, t.snoozed_until.or(t.due).unwrap_or(i64::MAX)));
         v
+    }
+
+    /// Pending (unfinished) items strictly for Today.
+    pub fn today_pending(&self, now: i64, offset_min: i32) -> Vec<&Todo> {
+        self.today_items(now, offset_min)
+            .into_iter()
+            .filter(|t| !t.done)
+            .collect()
     }
 
     /// Filter items with reminders (due != None), sorted chronologically.
@@ -427,5 +481,43 @@ mod tests {
         let item = t.items.iter().find(|x| x.id == id).unwrap();
         assert!(!item.done, "repeating item stays active");
         assert!(item.due.unwrap() > 1000 + 300_000);
+    }
+
+    #[test]
+    fn today_filtering_and_date_editing() {
+        let mut t = Todos::default();
+        let today_id = t.add_today("today task".into(), None, NOW, 420);
+        let timed_id = t.add_today("timed".into(), Some(NOW + time::HOUR), NOW, 420);
+        let _yesterday_id = t.add("old".into(), Some(NOW - time::DAY));
+        let _tomorrow_id = t.add("next".into(), Some(NOW + time::DAY));
+        let _dateless_id = t.add("no date".into(), None);
+
+        // Only today_id and timed_id should appear in today_items / today_pending
+        let today_ids: Vec<u64> = t.today_items(NOW, 420).iter().map(|x| x.id).collect();
+        assert_eq!(today_ids, vec![today_id, timed_id]);
+        assert_eq!(t.today_pending(NOW, 420).len(), 2);
+
+        // Completing today_id removes it from today_pending but keeps it in today_items
+        t.toggle(today_id, NOW, 420);
+        assert_eq!(t.today_pending(NOW, 420).iter().map(|x| x.id).collect::<Vec<_>>(), vec![timed_id]);
+        assert_eq!(t.today_items(NOW, 420).len(), 2);
+
+        // Shift timed_id to tomorrow -> no longer in today_items, preserves time-of-day
+        assert!(t.shift_date(timed_id, 1, NOW, 420));
+        assert_eq!(t.today_pending(NOW, 420).len(), 0);
+        let shifted = t.items.iter().find(|x| x.id == timed_id).unwrap();
+        assert_eq!(
+            (civil(shifted.due.unwrap(), 420).day, civil(shifted.due.unwrap(), 420).hour),
+            (11, 15)
+        );
+
+        // Move back to today -> appears in today_pending again with same time-of-day
+        assert!(t.set_date_today(timed_id, NOW, 420));
+        assert_eq!(t.today_pending(NOW, 420).len(), 1);
+        let back = t.items.iter().find(|x| x.id == timed_id).unwrap();
+        assert_eq!(
+            (civil(back.due.unwrap(), 420).day, civil(back.due.unwrap(), 420).hour),
+            (10, 15)
+        );
     }
 }

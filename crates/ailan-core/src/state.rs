@@ -456,7 +456,7 @@ mod tests {
     fn focus_always_wins_then_music_then_todo() {
         let mut s = state();
         // A task for today makes To-do live.
-        s.data.todos.add("write".into(), None);
+        s.data.todos.add_today("write".into(), None, 0, 0);
         assert_eq!(s.collapsed(0), Collapsed::Todo);
 
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn todo_only_live_while_today_has_unfinished_work() {
         let mut s = state();
-        let id = s.data.todos.add("a".into(), None);
+        let id = s.data.todos.add_today("a".into(), None, 0, 0);
         assert!(s.is_activity_running(Tab::Todo, 0));
         s.data.todos.toggle(id, 0, 0);
         assert!(!s.is_activity_running(Tab::Todo, 0));

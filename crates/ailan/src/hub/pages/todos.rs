@@ -1,14 +1,14 @@
 //! Todos page: segmented filter with sliding pill, live search, highlighted quick capture,
 //! and tactile rows with hover-revealed actions.
 
-use ailan_core::i18n::{t, Key};
+use ailan_core::i18n::{t, Key, Lang};
 use ailan_core::reminder::{day_bucket, fmt_due, DayBucket, Repeat};
 use ailan_core::todo::{due_token, Todo};
 
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::widgets::*;
 use crate::hub::{Field, HubAction, PageCtx, TodoFilter};
-use crate::ui::{G_ADD, G_CHECKMARK, G_TIMER};
+use crate::ui::{G_ADD, G_CHECKMARK, G_CHEVRON_LEFT, G_TIMER};
 
 const ROW_H: f32 = 46.0;
 const ROW_STEP: f32 = 52.0;
@@ -43,7 +43,13 @@ pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, frame
     let id = item.id;
     let hot = matches!(
         cx.hover,
-        Some(HubAction::TodoToggle(x) | HubAction::TodoDelete(x) | HubAction::FocusOnTodo(x)) if x == id
+        Some(
+            HubAction::TodoToggle(x)
+                | HubAction::TodoDelete(x)
+                | HubAction::FocusOnTodo(x)
+                | HubAction::ShiftTodoDate(x, _)
+                | HubAction::SetTodoToday(x)
+        ) if x == id
     );
     let hv = if hot { 1.0 } else { 0.0 };
     if framed {
@@ -85,16 +91,46 @@ pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, frame
         right -= 4.0;
     }
 
-    // Time badge + repeat glyph
+    // Time/date badge + quick date stepper (< / >) + repeat glyph
+    let next_act = HubAction::ShiftTodoDate(id, 1);
+    let prev_act = HubAction::ShiftTodoDate(id, -1);
+    if hot && !item.done {
+        let next_r = Rect::new(right - 22.0, cy - 11.0, 22.0, 22.0);
+        draw_icon_button(cv, next_r, G_CHEVRON_RIGHT, 9.0, cx.hover_t(next_act), false, ACCENT_PRIMARY);
+        cx.hit(next_r, next_act);
+        right -= 24.0;
+    }
+
     if let Some(due) = item.snoozed_until.or(item.due) {
         let label = fmt_due(due, item.all_day, cx.now, st.offset_min, cx.lang());
         let (fg, bg, ba) = badge_colors(item, cx.now, st.offset_min);
         let bw = draw_badge_right(cv, right, cy - 11.0, 22.0, &label, fg, bg, ba);
-        right -= bw + 6.0;
+        if !item.done {
+            let badge_act = if day_bucket(due, cx.now, st.offset_min) == DayBucket::Today {
+                next_act
+            } else {
+                HubAction::SetTodoToday(id)
+            };
+            cx.hit(Rect::new(right - bw, cy - 11.0, bw, 22.0), badge_act);
+        }
+        right -= bw + 4.0;
+        if hot && !item.done {
+            let prev_r = Rect::new(right - 22.0, cy - 11.0, 22.0, 22.0);
+            draw_icon_button(cv, prev_r, G_CHEVRON_LEFT, 9.0, cx.hover_t(prev_act), false, ACCENT_PRIMARY);
+            cx.hit(prev_r, prev_act);
+            right -= 26.0;
+        } else {
+            right -= 2.0;
+        }
         if item.repeat != Repeat::None {
             cv.glyph(G_REPEAT, 10.0, Rect::new(right - 16.0, cy - 8.0, 16.0, 16.0), TEXT_BODY, 0.9);
             right -= 20.0;
         }
+    } else if !item.done {
+        let lbl = if cx.lang() == Lang::Vi { "Đặt ngày" } else { "Set date" };
+        let bw = draw_badge_right(cv, right, cy - 11.0, 22.0, lbl, TEXT_BODY, BG_BADGE, 0.7);
+        cx.hit(Rect::new(right - bw, cy - 11.0, bw, 22.0), HubAction::SetTodoToday(id));
+        right -= bw + 6.0;
     }
 
     let title_r = Rect::new(row.x + 42.0, row.y, (right - row.x - 50.0).max(0.0), row.h);
@@ -142,10 +178,7 @@ fn matches_filter(item: &Todo, filter: TodoFilter, now: i64, offset_min: i32) ->
     let bucket = item.snoozed_until.or(item.due).map(|d| day_bucket(d, now, offset_min));
     match filter {
         TodoFilter::All => true,
-        TodoFilter::Today => match bucket {
-            Some(b) => matches!(b, DayBucket::Overdue | DayBucket::Today),
-            None => !item.done,
-        },
+        TodoFilter::Today => bucket == Some(DayBucket::Today),
         TodoFilter::Upcoming => {
             !item.done && matches!(bucket, Some(DayBucket::Tomorrow | DayBucket::ThisWeek | DayBucket::Later))
         }

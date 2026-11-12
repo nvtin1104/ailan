@@ -175,11 +175,15 @@ impl App {
                     self.hub_ctrl.copilot.clear();
                     let mut flight = None;
                     if !plan.title.is_empty() {
-                        let due = plan.due(now, self.state.offset_min);
+                        let parsed_due = plan.due(now, self.state.offset_min);
+                        let (due, all_day) = match parsed_due {
+                            Some(d) => (Some(d), false),
+                            None => (Some(ailan_core::time::local_midnight(now, self.state.offset_min)), true),
+                        };
                         let text: String = plan.title.chars().take(MAX_TEXT).collect();
-                        self.state.data.todos.add_full(text, due, false, plan.repeat, now);
+                        self.state.data.todos.add_full(text, due, all_day, plan.repeat, now);
                         self.state.mark_data_dirty(now);
-                        flight = Some(if due.is_some() { (ui::G_BELL, FLY_REMIND) } else { (ui::G_CHECKMARK, FLY_TODO) });
+                        flight = Some(if parsed_due.is_some() { (ui::G_BELL, FLY_REMIND) } else { (ui::G_CHECKMARK, FLY_TODO) });
                     }
                     if let Some(m) = plan.focus_min {
                         self.state.settings.durations.focus_min = m;
@@ -303,7 +307,7 @@ impl App {
                     }
                 }
                 if let Some((text, due)) = parse_input(&input, now, self.state.offset_min) {
-                    self.state.data.todos.add(text, due);
+                    self.state.data.todos.add_today(text, due, now, self.state.offset_min);
                     self.state.mark_data_dirty(now);
                     if due.is_some() {
                         self.launch_flight(ui::G_BELL, FLY_REMIND);
@@ -346,6 +350,16 @@ impl App {
             HubAction::SnoozeTodo(id, mins) => {
                 self.state.data.todos.snooze(id, now, mins);
                 self.state.mark_data_dirty(now);
+            }
+            HubAction::ShiftTodoDate(id, delta) => {
+                if self.state.data.todos.shift_date(id, delta as i64, now, self.state.offset_min) {
+                    self.state.mark_data_dirty(now);
+                }
+            }
+            HubAction::SetTodoToday(id) => {
+                if self.state.data.todos.set_date_today(id, now, self.state.offset_min) {
+                    self.state.mark_data_dirty(now);
+                }
             }
             HubAction::SetTodoFilter(filter) => {
                 self.hub_ctrl.set_filter(filter);

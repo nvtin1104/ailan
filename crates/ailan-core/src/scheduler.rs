@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn todo_island_wakes_at_midnight() {
         let mut s = AppState::new(Settings::default(), Data::default(), 0);
-        s.data.todos.add("x".into(), None);
+        s.data.todos.add_today("x".into(), None, 1_000, 0);
         assert_eq!(next_deadline(&s, 1_000, view(false, Tab::Todo)), Some(time::DAY));
     }
 
