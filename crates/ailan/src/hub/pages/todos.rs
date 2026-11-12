@@ -8,7 +8,7 @@ use ailan_core::todo::{due_token, Todo};
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::widgets::*;
 use crate::hub::{Field, HubAction, PageCtx, TodoFilter};
-use crate::ui::{G_ADD, G_TIMER};
+use crate::ui::{G_ADD, G_CHECKMARK, G_TIMER};
 
 const ROW_H: f32 = 46.0;
 const ROW_STEP: f32 = 52.0;
@@ -158,18 +158,20 @@ pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     let st = cx.st;
     let mut y = r.y - cx.scroll;
 
-    // 1. Toolbar: segmented filter + search
+    // 1. Toolbar: filter tabs + search
     let labels = [t(lang, Key::AllTasks), t(lang, Key::TodayTasks), t(lang, Key::UpcomingTasks), t(lang, Key::CompletedTasks)];
+    let icons = [G_LIST, G_CALENDAR, G_CHEVRON_RIGHT, G_CHECKMARK];
     let (seg_r, search_r) = if cx.compact {
-        (Rect::new(r.x, y, r.w, 34.0), Rect::new(r.x, y + 44.0, r.w, 34.0))
+        (Rect::new(r.x, y, r.w, 40.0), Rect::new(r.x, y + 50.0, r.w, 34.0))
     } else {
         let sw = 220.0f32.min(r.w * 0.34);
-        (Rect::new(r.x, y, r.w - sw - 14.0, 34.0), Rect::new(r.right() - sw, y, sw, 34.0))
+        (Rect::new(r.x, y, r.w, 40.0), Rect::new(r.right() - sw, y + 2.0, sw, 34.0))
     };
-    let hover_seg = TodoFilter::ALL.iter().position(|f| cx.hover == Some(HubAction::SetTodoFilter(*f)));
-    let segs = draw_segmented(cv, seg_r, &labels, cx.filter_pos, hover_seg);
-    for (sr, f) in segs.iter().zip(TodoFilter::ALL) {
-        cx.hit(*sr, HubAction::SetTodoFilter(f));
+    let items: Vec<(&str, Option<char>)> = labels.iter().zip(icons).map(|(l, g)| (*l, Some(g))).collect();
+    let hover_tab = TodoFilter::ALL.iter().position(|f| cx.hover == Some(HubAction::SetTodoFilter(*f)));
+    let tabs = draw_tab_strip(cv, seg_r, &items, cx.filter_pos, hover_tab, cx.compact);
+    for (tr, f) in tabs.iter().zip(TodoFilter::ALL) {
+        cx.hit(*tr, HubAction::SetTodoFilter(f));
     }
     let s_focused = cx.focus == Some(Field::Search);
     if !cx.search.is_empty() {

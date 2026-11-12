@@ -94,6 +94,7 @@ pub fn render_icon(size: i32) -> Vec<u8> {
 }
 
 /// Generate valid .ico binary file bytes containing multiple icon sizes.
+#[allow(dead_code)]
 pub fn render_ico_bytes(sizes: &[i32]) -> Vec<u8> {
     let mut out = Vec::new();
 

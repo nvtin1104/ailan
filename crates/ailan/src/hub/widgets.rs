@@ -102,6 +102,8 @@ pub const ACCENT_FILL: Gradient = Gradient::new(&[(0.0, ACCENT_PRIMARY, 1.0), (1
 pub const ACCENT_TINT: Gradient = Gradient::new(&[(0.0, ACCENT_PRIMARY, 0.26), (1.0, ACCENT_PRIMARY_HI, 0.10)]);
 pub const GLOW_ACCENT: Gradient = Gradient::new(&[(0.0, ACCENT_PRIMARY_HI, 0.45), (1.0, ACCENT_PRIMARY, 0.0)]);
 pub const GLOW_MINT: Gradient = Gradient::new(&[(0.0, ACCENT_MINT, 0.40), (1.0, ACCENT_MINT, 0.0)]);
+/// Active-tab light: transparent at the top, faint accent at the indicator.
+pub const TAB_LIFT: Gradient = Gradient::new(&[(0.0, ACCENT_PRIMARY, 0.0), (1.0, ACCENT_PRIMARY, 0.14)]);
 pub const GLOW_ROSE: Gradient = Gradient::new(&[(0.0, ACCENT_ROSE, 0.45), (1.0, ACCENT_ROSE, 0.0)]);
 pub const GLOW_AMBER: Gradient = Gradient::new(&[(0.0, ACCENT_AMBER, 0.40), (1.0, ACCENT_AMBER, 0.0)]);
 
@@ -406,29 +408,84 @@ pub fn draw_checkbox(cv: &mut Canvas, r: Rect, checked: bool, ring: u32, hover: 
     }
 }
 
-/// Segmented pill control. `active_pos` is the (spring-animated) fractional index of the
-/// sliding indicator. Returns each segment's rect for hit testing.
-pub fn draw_segmented(cv: &mut Canvas, r: Rect, labels: &[&str], active_pos: f32, hover: Option<usize>) -> Vec<Rect> {
-    let n = labels.len().max(1) as f32;
-    let pad = 3.0;
-    cv.fill_round(r, r.h * 0.5, BG_INPUT, 0.85);
-    cv.hairline_round_linear(r, r.h * 0.5, RIM, (r.x, r.y), (r.x, r.bottom()), 1.0);
-    let seg_w = (r.w - pad * 2.0) / n;
-    let inner_h = r.h - pad * 2.0;
-    let pill = Rect::new(r.x + pad + seg_w * active_pos.clamp(0.0, n - 1.0), r.y + pad, seg_w, inner_h);
-    let pill_rad = concentric(r.h * 0.5, pad);
-    cv.fill_round_linear(pill, pill_rad, SURFACE_ELEVATED, (pill.x, pill.y), (pill.right(), pill.bottom()), 1.0);
-    cv.fill_round_linear(pill, pill_rad, ACCENT_TINT, (pill.x, pill.y), (pill.right(), pill.bottom()), 0.8);
-    cv.hairline_round_linear(pill, pill_rad, RIM_HOT, (pill.x, pill.y), (pill.x, pill.bottom()), 1.0);
-    let mut out = Vec::with_capacity(labels.len());
-    for (i, label) in labels.iter().enumerate() {
-        let sr = Rect::new(r.x + pad + seg_w * i as f32, r.y + pad, seg_w, inner_h);
-        let near = 1.0 - (active_pos - i as f32).abs().min(1.0);
-        let fg = mix(if hover == Some(i) { TEXT_TITLE } else { TEXT_BODY }, TEXT_HERO, near);
-        cv.text(label, Font::text(12.0, if near > 0.5 { 600 } else { 500 }, Align::Center), sr, fg, 1.0);
-        out.push(sr);
+/// Underline tab strip used for every tab bar in the Hub.
+///
+/// * `items` — `(label, optional icon)`.
+/// * `pos` — spring-animated fractional index of the active tab.
+/// * `equal` — equal-width columns (Compact) instead of content-sized tabs.
+///
+/// States: idle = muted label; hover = brighter label/icon + faint preview underline;
+/// active = bright bold label + accent underline that slides (position and width) to it.
+/// Returns each tab's rect for hit testing.
+pub fn draw_tab_strip(cv: &mut Canvas, r: Rect, items: &[(&str, Option<char>)], pos: f32, hover: Option<usize>, equal: bool) -> Vec<Rect> {
+    let n = items.len().max(1);
+    let font_on = Font::text(13.0, 650, Align::Left);
+    let font_off = Font::text(13.0, 500, Align::Left);
+    let icon_w = 22.0;
+
+    // Tab rects and the underline span inside each.
+    let mut tabs = Vec::with_capacity(n);
+    let mut spans: Vec<(f32, f32)> = Vec::with_capacity(n);
+    if equal {
+        let w = r.w / n as f32;
+        for (i, (label, _)) in items.iter().enumerate() {
+            let tr = Rect::new(r.x + i as f32 * w, r.y, w, r.h);
+            let tw = cv.text_width(label, font_on, TextStyle::default()).min(w - 8.0);
+            tabs.push(tr);
+            spans.push((tr.x + (w - tw) * 0.5, tw));
+        }
+    } else {
+        let mut x = r.x;
+        for (label, icon) in items {
+            let iw = if icon.is_some() { icon_w } else { 0.0 };
+            let tw = cv.text_width(label, font_on, TextStyle::default()) + iw;
+            let w = tw + 28.0;
+            tabs.push(Rect::new(x, r.y, w, r.h));
+            spans.push((x + 14.0, tw));
+            x += w + 4.0;
+        }
     }
-    out
+
+    draw_divider_h(cv, r.x, r.bottom() - 1.0, r.w);
+    let pos = pos.clamp(0.0, (n - 1) as f32);
+    let active = pos.round() as usize;
+    for (i, (tr, (label, icon))) in tabs.iter().zip(items.iter()).enumerate() {
+        let near = 1.0 - (pos - i as f32).abs().min(1.0);
+        let hovered = hover == Some(i) && i != active;
+        let base = if hovered { TEXT_TITLE } else { TEXT_BODY };
+        let fg = mix(base, TEXT_HERO, near);
+        let font = if near > 0.5 { font_on } else { font_off };
+        let (sx, sw) = spans[i];
+        let text_r = Rect::new(tr.x, tr.y, tr.w, tr.h - 3.0);
+        if equal {
+            cv.text(label, Font::text(13.0, font.weight, Align::Center), text_r, fg, 1.0);
+        } else {
+            let mut tx = sx;
+            if let Some(g) = icon {
+                let icol = mix(if hovered { TEXT_TITLE } else { TEXT_BODY }, ACCENT_PRIMARY_HI, near * 0.75);
+                cv.glyph(*g, 11.5, Rect::new(tx, text_r.y, 16.0, text_r.h), icol, 1.0);
+                tx += icon_w;
+            }
+            cv.text(label, font, Rect::new(tx, text_r.y, sx + sw - tx + 4.0, text_r.h), fg, 1.0);
+        }
+        if hovered {
+            // Preview of where the indicator would go (full tab width, square).
+            cv.fill_rect(Rect::new(tr.x, r.bottom() - 2.0, tr.w, 2.0), WHITE, 0.18);
+        }
+    }
+
+    // Accent indicator interpolated between neighbouring tabs.
+    let (i0, i1) = (pos.floor() as usize, (pos.ceil() as usize).min(n - 1));
+    let f = pos - i0 as f32;
+    let ux = tabs[i0].x + (tabs[i1].x - tabs[i0].x) * f;
+    let uw = tabs[i0].w + (tabs[i1].w - tabs[i0].w) * f;
+    // Active area spans the whole tab, square-cornered: soft light rising from the
+    // indicator, and the 2px indicator sitting exactly on the divider.
+    let lift = Rect::new(ux, r.y, uw, r.h);
+    cv.fill_rect_linear(lift, TAB_LIFT, (lift.x, lift.y), (lift.x, lift.bottom()), 1.0);
+    let ul = Rect::new(ux, r.bottom() - 2.0, uw, 2.0);
+    cv.fill_rect_linear(ul, ACCENT_FILL, (ul.x, ul.y), (ul.right(), ul.y), 1.0);
+    tabs
 }
 
 /// Syntax-highlight runs for an `@day time` token in task input (violet day, amber time).

@@ -27,66 +27,16 @@ pub fn tab_labels(lang: Lang, compact: bool) -> [&'static str; 5] {
 
 const TAB_ICONS: [char; 5] = ['\u{EA8F}', '\u{E917}', '\u{E823}', '\u{E916}', '\u{E774}'];
 
-/// Underline tab strip (icon + label) with a spring-driven sliding indicator.
-/// Returns the y below it.
+/// Reminders page tab bar. Returns the y below it.
 pub fn draw_tabs(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, y: f32) -> f32 {
     let labels = tab_labels(cx.lang(), cx.compact);
-    let h = 40.0;
-    let font_on = Font::text(13.0, 650, Align::Left);
-    let font_off = Font::text(13.0, 500, Align::Left);
-
-    // Tab rects: content-sized in Full mode, equal columns (text only) in Compact.
-    let mut tabs: Vec<Rect> = Vec::with_capacity(5);
-    let mut inner: Vec<(f32, f32)> = Vec::with_capacity(5); // underline span (x, w)
-    if cx.compact {
-        let w = r.w / 5.0;
-        for (i, l) in labels.iter().enumerate() {
-            let tr = Rect::new(r.x + i as f32 * w, y, w, h);
-            let tw = cv.text_width(l, font_on, TextStyle::default()).min(w - 8.0);
-            tabs.push(tr);
-            inner.push((tr.x + (w - tw) * 0.5, tw));
-        }
-    } else {
-        let mut x = r.x;
-        for l in labels.iter() {
-            let tw = cv.text_width(l, font_on, TextStyle::default());
-            let w = tw + 22.0 + 28.0;
-            tabs.push(Rect::new(x, y, w, h));
-            inner.push((x + 14.0, tw + 22.0));
-            x += w + 4.0;
-        }
+    let items: Vec<(&str, Option<char>)> = labels.iter().zip(TAB_ICONS).map(|(l, g)| (*l, Some(g))).collect();
+    let hover = (0..5).position(|i| cx.hover == Some(HubAction::SetClockTab(i as u8)));
+    let tabs = draw_tab_strip(cv, Rect::new(r.x, y, r.w, 40.0), &items, cx.clock_tab_pos, hover, cx.compact);
+    for (i, tr) in tabs.iter().enumerate() {
+        cx.hit(*tr, HubAction::SetClockTab(i as u8));
     }
-
-    draw_divider_h(cv, r.x, y + h - 1.0, r.w);
-    let pos = cx.clock_tab_pos.clamp(0.0, 4.0);
-    for (i, (tr, l)) in tabs.iter().zip(labels.iter()).enumerate() {
-        let act = HubAction::SetClockTab(i as u8);
-        let near = 1.0 - (pos - i as f32).abs().min(1.0);
-        let hv = cx.hover_t(act);
-        if hv > 0.0 && i != cx.clock_tab {
-            cv.fill_round(tr.inset(2.0, 5.0), RADIUS_BUTTON, WHITE, 0.045);
-        }
-        let fg = mix(if hv > 0.0 { TEXT_TITLE } else { TEXT_BODY }, TEXT_HERO, near);
-        let font = if near > 0.5 { font_on } else { font_off };
-        let (ix, iw) = inner[i];
-        if cx.compact {
-            cv.text(l, Font::text(13.0, font.weight, Align::Center), Rect::new(tr.x + 2.0, tr.y, tr.w - 4.0, tr.h - 4.0), fg, 1.0);
-        } else {
-            cv.glyph(TAB_ICONS[i], 11.5, Rect::new(ix, tr.y, 16.0, tr.h - 4.0), mix(fg, ACCENT_PRIMARY_HI, near * 0.7), 1.0);
-            cv.text(l, font, Rect::new(ix + 22.0, tr.y, iw - 22.0 + 4.0, tr.h - 4.0), fg, 1.0);
-        }
-        cx.hit(*tr, act);
-    }
-
-    // Sliding underline: interpolate position and width between neighbouring tabs.
-    let (i0, i1) = (pos.floor() as usize, (pos.ceil() as usize).min(4));
-    let f = pos - i0 as f32;
-    let ux = inner[i0].0 + (inner[i1].0 - inner[i0].0) * f;
-    let uw = inner[i0].1 + (inner[i1].1 - inner[i0].1) * f;
-    let ul = Rect::new(ux, y + h - 2.5, uw, 2.5);
-    cv.fill_circle_radial(ux + uw * 0.5, y + h - 1.0, uw * 0.6, GLOW_ACCENT, 0.35);
-    cv.fill_round_linear(ul, 1.25, ACCENT_FILL, (ul.x, ul.y), (ul.right(), ul.y), 1.0);
-    y + h + 16.0
+    y + 40.0 + 16.0
 }
 
 fn repeat_label(lang: Lang, days: u8) -> String {

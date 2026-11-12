@@ -7,6 +7,7 @@ pub mod audio;
 pub mod autostart;
 pub mod brightness;
 pub mod flight;
+pub mod icon_art;
 pub mod media;
 pub mod network;
 pub mod power;

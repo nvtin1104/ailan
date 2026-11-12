@@ -151,7 +151,7 @@ fn make_icon(size: i32) -> windows::core::Result<HICON> {
         }
     }
 
-    let px = crate::icon_art::render_icon(size);
+    let px = crate::platform::icon_art::render_icon(size);
     unsafe {
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {

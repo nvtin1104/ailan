@@ -4,7 +4,6 @@
 mod app;
 mod gfx;
 pub mod hub;
-pub mod icon_art;
 mod platform;
 mod ui;
 

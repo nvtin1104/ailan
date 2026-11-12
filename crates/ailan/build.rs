@@ -2,11 +2,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-#[path = "src/icon_art.rs"]
+#[path = "src/platform/icon_art.rs"]
 mod icon_art;
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/icon_art.rs");
+    println!("cargo:rerun-if-changed=src/platform/icon_art.rs");
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
