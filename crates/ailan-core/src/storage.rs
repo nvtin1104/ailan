@@ -96,7 +96,7 @@ mod tests {
         let d = tmp_dir("rt");
         let mut s = Settings::default();
         s.reduce_motion = true;
-        s.durations.focus_min = 50;
+        s.tab = crate::settings::Tab::Todo;
         save(&d.join("settings.toml"), Format::Toml, &s).unwrap();
         let (back, how): (Settings, _) = load(&d.join("settings.toml"), Format::Toml);
         assert_eq!(how, Loaded::Ok);
@@ -137,7 +137,7 @@ mod tests {
         let (s, how): (Settings, _) = load(&p, Format::Toml);
         assert_eq!(how, Loaded::Ok);
         assert!(s.reduce_motion);
-        assert_eq!(s.durations.focus_min, 25);
+        assert_eq!(s.tab, crate::settings::Tab::Music);
         let _ = fs::remove_dir_all(&d);
     }
 

@@ -6,15 +6,14 @@
 
 use ailan_core::i18n::{short_date, t, Key};
 use ailan_core::reminder::{day_bucket, fmt_due, DayBucket};
-use ailan_core::time::{civil, fmt_duration, local_day};
-use ailan_core::timer::Phase;
+use ailan_core::time::{civil, local_day};
 use ailan_core::todo::Todo;
 
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::pages::todos::{capture_bar, todo_row};
 use crate::hub::widgets::*;
 use crate::hub::{HubAction, PageCtx};
-use crate::ui::{G_BELL, G_PAUSE, G_PLAY, G_RESET, G_TIMER};
+use crate::ui::G_BELL;
 
 const GAP: f32 = 14.0;
 
@@ -40,11 +39,8 @@ pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
 }
 
 fn draw_bento(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
-    let col = (r.w - GAP) * 0.5;
-    let hero = Rect::new(r.x, r.y, col, 172.0);
-    let focus = Rect::new(r.x + col + GAP, r.y, col, 172.0);
+    let hero = Rect::new(r.x, r.y, r.w, 152.0);
     draw_hero(cv, cx, hero, false);
-    draw_focus_hub(cv, cx, focus, false);
 
     let cap = Rect::new(r.x, hero.bottom() + GAP, r.w, 48.0);
     capture_bar(cv, cx, cap, t(cx.lang(), Key::CaptureHint));
@@ -59,9 +55,7 @@ fn draw_bento(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
 fn draw_stacked(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     let hero = Rect::new(r.x, r.y, r.w, 96.0);
     draw_hero(cv, cx, hero, true);
-    let focus = Rect::new(r.x, hero.bottom() + 10.0, r.w, 92.0);
-    draw_focus_hub(cv, cx, focus, true);
-    let cap = Rect::new(r.x, focus.bottom() + 10.0, r.w, 44.0);
+    let cap = Rect::new(r.x, hero.bottom() + 10.0, r.w, 44.0);
     capture_bar(cv, cx, cap, t(cx.lang(), Key::CaptureHint));
     let ly = cap.bottom() + 10.0;
     draw_task_list(cv, cx, Rect::new(r.x, ly, r.w, (r.bottom() - ly).max(100.0)));
@@ -115,76 +109,6 @@ fn draw_hero(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, compact: bool) {
     let pct = format!("{}%", (progress * 100.0).round() as u32);
     let pf = Font::text(if compact { 13.0 } else { 17.0 }, 700, Align::Center);
     cv.text_styled(&pct, pf, Rect::new(rcx - ring_r, rcy - 11.0, ring_r * 2.0, 22.0), TEXT_HERO, 1.0, TextStyle::TABULAR);
-}
-
-fn draw_focus_hub(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, compact: bool) {
-    let lang = cx.lang();
-    let st = cx.st;
-    let p = &st.pomodoro;
-    cx.card(cv, r, RADIUS_CARD, 0.0);
-    let (phase_lbl, tint) = match p.phase {
-        Phase::Focus => (t(lang, Key::Focus), ACCENT_PRIMARY_HI),
-        Phase::ShortBreak => (t(lang, Key::ShortBreak), ACCENT_MINT),
-        Phase::LongBreak => (t(lang, Key::LongBreak), ACCENT_MINT),
-    };
-    let ring_r = if compact { 30.0 } else { 46.0 };
-    let pad = if compact { 16.0 } else { 20.0 };
-    let (rcx, rcy) = (r.x + pad + ring_r + 4.0, r.y + if compact { r.h * 0.5 } else { r.h * 0.5 + 8.0 });
-
-    if p.is_running() {
-        cv.fill_circle_radial(rcx, rcy, ring_r * 1.9, if tint == ACCENT_MINT { GLOW_MINT } else { GLOW_ACCENT }, 0.35);
-    }
-    let prog = if p.is_active() { p.progress(cx.now) } else { 0.0 };
-    draw_progress_ring(cv, rcx, rcy, ring_r, if compact { 4.5 } else { 6.0 }, prog, tint, true);
-    let time = fmt_duration(p.remaining(cx.now));
-    let tf = Font::text(if compact { 14.0 } else { 20.0 }, 700, Align::Center);
-    cv.text_styled(&time, tf, Rect::new(rcx - ring_r, rcy - 13.0, ring_r * 2.0, 26.0), TEXT_HERO, 1.0, TextStyle::TABULAR);
-
-    let x0 = rcx + ring_r + if compact { 18.0 } else { 26.0 };
-
-    if !compact {
-        cv.glyph(G_TIMER, 12.0, Rect::new(r.x + pad - 2.0, r.y + pad - 4.0, 18.0, 20.0), tint, 1.0);
-        draw_section_header(cv, Rect::new(r.x + pad + 20.0, r.y + pad - 2.0, 160.0, 16.0), phase_lbl);
-        // Streak: sessions done today vs. the long-break cycle goal.
-        let today = local_day(cx.now, st.offset_min);
-        let sessions = st.data.focus_count(today) as usize;
-        let goal = (p.durations.long_every.max(1) as usize).max(sessions).min(8);
-        let sy = r.y + 56.0;
-        cv.text_styled(&format!("{sessions}"), Font::text(20.0, 700, Align::Left), Rect::new(x0, sy - 4.0, 40.0, 26.0), TEXT_HERO, 1.0, TextStyle::TABULAR);
-        let nw = cv.text_width(&format!("{sessions}"), Font::text(20.0, 700, Align::Left), TextStyle::TABULAR);
-        cv.text(t(lang, Key::SessionsToday), FONT_META, Rect::new(x0 + nw + 6.0, sy, r.right() - x0 - nw - 26.0, 20.0), TEXT_BODY, 1.0);
-        for i in 0..goal {
-            let dx = x0 + 5.0 + i as f32 * 15.0;
-            if i < sessions {
-                cv.fill_circle(dx, sy + 30.0, 4.5, ACCENT_MINT, 1.0);
-            } else {
-                cv.stroke_circle(dx, sy + 30.0, 4.0, 1.2, WHITE, 0.2);
-            }
-        }
-    } else {
-        cv.text(phase_lbl, Font::text(12.5, 600, Align::Left), Rect::new(x0, r.y + 18.0, r.right() - x0 - 50.0, 18.0), tint, 1.0);
-    }
-
-    // Controls
-    let by = if compact { r.bottom() - 16.0 - 30.0 } else { r.bottom() - pad - 32.0 };
-    let toggle = HubAction::PomoToggle;
-    let label = if p.is_running() { t(lang, Key::Pause) } else { t(lang, Key::Start) };
-    let tw = if compact { 84.0 } else { 96.0 };
-    let tr = Rect::new(x0, by, tw, 32.0);
-    draw_button(cv, tr, "", ButtonKind::Primary, cx.hover_t(toggle));
-    cv.glyph(if p.is_running() { G_PAUSE } else { G_PLAY }, 10.0, Rect::new(tr.x + 8.0, tr.y, 22.0, tr.h), WHITE, 1.0);
-    cv.text(label, Font::text(12.0, 600, Align::Left), Rect::new(tr.x + 30.0, tr.y, tr.w - 34.0, tr.h), WHITE, 1.0);
-    cx.hit(tr, toggle);
-    let skip = HubAction::PomoSkip;
-    let skr = Rect::new(tr.right() + 8.0, by, 32.0, 32.0);
-    draw_button(cv, skr, "", ButtonKind::Ghost, cx.hover_t(skip));
-    cv.glyph(G_SKIP, 10.0, skr, TEXT_TITLE, 1.0);
-    cx.hit(skr, skip);
-    let reset = HubAction::PomoReset;
-    let rsr = Rect::new(skr.right() + 6.0, by, 32.0, 32.0);
-    draw_button(cv, rsr, "", ButtonKind::Ghost, cx.hover_t(reset));
-    cv.glyph(G_RESET, 10.0, rsr, TEXT_TITLE, 1.0);
-    cx.hit(rsr, reset);
 }
 
 fn draw_task_list(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {

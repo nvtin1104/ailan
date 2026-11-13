@@ -10,8 +10,6 @@ use ailan_core::anim::Spring;
 use ailan_core::i18n::{t, Key};
 use ailan_core::reminder::{day_bucket, DayBucket};
 use ailan_core::settings::HubPage;
-use ailan_core::time::fmt_duration;
-use ailan_core::timer::Phase;
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
@@ -465,11 +463,11 @@ impl HubController {
             self.push_hit(nr, act);
         }
 
-        // Mini Pomodoro & Media dock pinned to the sidebar bottom
-        let dock = Rect::new(12.0, h - 12.0 - 132.0, SIDEBAR_W - 24.0, 132.0);
+        // Mini Media dock pinned to the sidebar bottom
+        let dock = Rect::new(12.0, h - 12.0 - 56.0, SIDEBAR_W - 24.0, 56.0);
         self.spots.push(dock);
         draw_specular_card(cv, dock, RADIUS_CARD, 0.0, self.mouse);
-        self.draw_mini_dock(cv, st, now, dock);
+        self.draw_mini_dock(cv, st, dock);
 
         // Titlebar over the content column; command bar centred on the window.
         let bar_w = 380.0f32.min(w - SIDEBAR_W - 160.0);
@@ -526,35 +524,9 @@ impl HubController {
         }
     }
 
-    fn draw_mini_dock(&mut self, cv: &mut Canvas, st: &AppState, now: i64, r: Rect) {
+    fn draw_mini_dock(&mut self, cv: &mut Canvas, st: &AppState, r: Rect) {
         let lang = st.lang();
-        let p = &st.pomodoro;
-        let (phase_lbl, tint) = phase_label(lang, p.phase);
-        draw_section_header(cv, Rect::new(r.x + 14.0, r.y + 10.0, r.w - 28.0, 16.0), phase_lbl);
-        let time = fmt_duration(p.remaining(now));
-        cv.text_styled(&time, Font::text(22.0, 700, Align::Left), Rect::new(r.x + 14.0, r.y + 26.0, 100.0, 28.0), TEXT_HERO, 1.0, TextStyle::TABULAR);
-
-        let play = HubAction::PomoToggle;
-        let (pcx, pcy) = (r.right() - 30.0, r.y + 38.0);
-        draw_round_button(cv, pcx, pcy, 16.0, if p.is_running() { G_PAUSE } else { G_PLAY }, self.hover_t(play), true);
-        self.push_hit(Rect::new(pcx - 16.0, pcy - 16.0, 32.0, 32.0), play);
-        let skip = HubAction::PomoSkip;
-        let sr = Rect::new(pcx - 50.0, pcy - 12.0, 24.0, 24.0);
-        draw_icon_button(cv, sr, G_SKIP, 10.0, self.hover_t(skip), false, ACCENT_PRIMARY);
-        self.push_hit(sr, skip);
-
-        let track = Rect::new(r.x + 14.0, r.y + 62.0, r.w - 28.0, 3.0);
-        cv.fill_round(track, 1.5, WHITE, 0.07);
-        let prog = p.progress(now).clamp(0.0, 1.0);
-        if prog > 0.0 {
-            let f = Rect::new(track.x, track.y, track.w * prog, track.h);
-            cv.fill_round_linear(f, 1.5, ACCENT_FILL, (f.x, f.y), (track.right(), f.y), 1.0);
-            let _ = tint;
-        }
-        draw_divider_h(cv, r.x + 10.0, r.y + 76.0, r.w - 20.0);
-
-        // Media row
-        let my = r.y + 84.0;
+        let my = r.y + 9.0;
         match &st.media {
             Some(m) if !m.title.is_empty() => {
                 cv.glyph(G_MUSIC, 12.0, Rect::new(r.x + 10.0, my, 22.0, 38.0), if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, 1.0);
@@ -665,14 +637,6 @@ impl HubController {
             }
         }
         self.spots.retain(|s| s.intersect(&r).is_some() || s.x < SIDEBAR_W);
-    }
-}
-
-fn phase_label(lang: ailan_core::i18n::Lang, phase: Phase) -> (&'static str, u32) {
-    match phase {
-        Phase::Focus => (t(lang, Key::Focus), ACCENT_PRIMARY_HI),
-        Phase::ShortBreak => (t(lang, Key::ShortBreak), ACCENT_MINT),
-        Phase::LongBreak => (t(lang, Key::LongBreak), ACCENT_MINT),
     }
 }
 

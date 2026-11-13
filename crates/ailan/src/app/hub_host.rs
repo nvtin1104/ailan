@@ -1,6 +1,6 @@
 //! AiLan Personal Hub window lifecycle, action dispatch, rendering, and Win32 handle_hub.
 
-use ailan_core::settings::{HubPage, Tab};
+use ailan_core::settings::HubPage;
 use ailan_core::todo::{parse_input, MAX_TEXT};
 use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{FillRect, GetMonitorInfoW, GetStockObject, MonitorFromPoint, RedrawWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW};
@@ -15,7 +15,7 @@ use crate::platform::media::MediaCmd;
 use crate::platform::{autostart, sys};
 use crate::ui;
 
-use super::{apply_cursor_icon, App, FLY_FOCUS, FLY_REMIND, FLY_TODO, T_HUB};
+use super::{apply_cursor_icon, App, FLY_REMIND, FLY_TODO, T_HUB};
 
 impl App {
     // ---- AiLan Personal Hub window ----------------------------------------------
@@ -185,18 +185,6 @@ impl App {
                         self.state.mark_data_dirty(now);
                         flight = Some(if parsed_due.is_some() { (ui::G_BELL, FLY_REMIND) } else { (ui::G_CHECKMARK, FLY_TODO) });
                     }
-                    if let Some(m) = plan.focus_min {
-                        self.state.settings.durations.focus_min = m;
-                        let d = self.state.settings.durations;
-                        self.state.pomodoro.set_durations(d);
-                        self.state.mark_settings_dirty(now);
-                    }
-                    if plan.start_focus && !self.state.pomodoro.is_running() {
-                        self.state.pomodoro.toggle(now);
-                        self.tab = Tab::Focus;
-                        // Focus wins on the island, so that is what flies in.
-                        flight = Some((ui::G_TIMER, FLY_FOCUS));
-                    }
                     if let Some((g, tint)) = flight {
                         self.launch_flight(g, tint);
                     }
@@ -325,23 +313,12 @@ impl App {
                 }
                 self.state.mark_data_dirty(now);
             }
-            HubAction::FocusOnTodo(_id) => {
-                if !self.state.pomodoro.is_running() {
-                    self.state.pomodoro.reset();
-                    self.state.pomodoro.toggle(now);
-                    self.launch_flight(ui::G_TIMER, FLY_FOCUS);
-                }
-                self.tab = Tab::Focus;
-            }
             HubAction::ToggleBucket(i) => {
                 if let Some(c) = self.hub_ctrl.collapsed.get_mut(i as usize) {
                     *c = !*c;
                 }
                 self.hub_needs_draw = true;
                 return;
-            }
-            HubAction::PomoSkip => {
-                self.state.pomodoro.skip();
             }
             HubAction::DeleteTodo(id) | HubAction::TodoDelete(id) => {
                 self.state.data.todos.remove(id);
@@ -365,38 +342,6 @@ impl App {
                 self.hub_ctrl.set_filter(filter);
                 self.hub_needs_draw = true;
                 return;
-            }
-            HubAction::PomoToggle | HubAction::FocusToggle => {
-                let was_running = self.state.pomodoro.is_running();
-                self.state.pomodoro.toggle(now);
-                if self.state.pomodoro.is_running() {
-                    self.tab = Tab::Focus;
-                    if !was_running {
-                        self.launch_flight(ui::G_TIMER, FLY_FOCUS);
-                    }
-                }
-            }
-            HubAction::PomoReset | HubAction::FocusReset => {
-                self.state.pomodoro.reset();
-            }
-            HubAction::SetPomoWork(min) => {
-                self.state.settings.durations.focus_min = min as u32;
-                let d = self.state.settings.durations;
-                self.state.pomodoro.set_durations(d);
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::SetPomoBreak(min) => {
-                self.state.settings.durations.short_min = min as u32;
-                let d = self.state.settings.durations;
-                self.state.pomodoro.set_durations(d);
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::AdjustPomo(field, delta) => {
-                if field.apply(&mut self.state.settings.durations, delta) {
-                    let d = self.state.settings.durations;
-                    self.state.pomodoro.set_durations(d);
-                    self.state.mark_settings_dirty(now);
-                }
             }
             HubAction::MediaPlayPause | HubAction::MediaToggle => {
                 self.media.send(MediaCmd::TogglePlayPause);

@@ -6,8 +6,6 @@ use crate::clock::{Countdown, Stopwatch};
 use crate::event::{AppEvent, Artwork, Battery, MediaInfo, Network};
 use crate::i18n::{t, Key, Lang};
 use crate::settings::{Data, Settings, Tab};
-use crate::time;
-use crate::timer::{Phase, Pomodoro};
 
 pub const OSD_MS: i64 = 1_500;
 pub const BANNER_MS: i64 = 4_000;
@@ -60,7 +58,6 @@ pub struct Banner {
 pub enum Collapsed {
     Osd,
     Banner,
-    Timer,
     Countdown,
     Stopwatch,
     Media,
@@ -68,8 +65,8 @@ pub enum Collapsed {
     Minimal,
 }
 
-/// Fixed activity priority: Focus always wins, then Music, then To-do.
-pub const ACTIVITY_ORDER: [Tab; 3] = [Tab::Focus, Tab::Music, Tab::Todo];
+/// Fixed activity priority: Music, then To-do.
+pub const ACTIVITY_ORDER: [Tab; 2] = [Tab::Music, Tab::Todo];
 
 /// A user-facing notification the shell should also surface outside the notch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +91,6 @@ pub struct AppState {
     pub network: Network,
     pub audio_device: Option<(String, bool)>,
 
-    pub pomodoro: Pomodoro,
     pub countdown: Countdown,
     pub stopwatch: Stopwatch,
     /// UTC offsets (minutes) of `data.world_clocks`, refreshed by the shell (DST-aware).
@@ -109,7 +105,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(settings: Settings, data: Data, offset_min: i32) -> Self {
-        let pomodoro = Pomodoro::new(settings.durations);
         Self {
             settings,
             data,
@@ -121,7 +116,6 @@ impl AppState {
             battery: None,
             network: Network::default(),
             audio_device: None,
-            pomodoro,
             countdown: Countdown::default(),
             stopwatch: Stopwatch::default(),
             world_offsets: Vec::new(),
@@ -190,7 +184,6 @@ impl AppState {
     /// - To-do: unfinished tasks remain for today.
     pub fn is_activity_running(&self, tab: Tab, now: i64) -> bool {
         match tab {
-            Tab::Focus => self.pomodoro.is_active(),
             Tab::Music => self.media.as_ref().is_some_and(|m| m.playing),
             Tab::Todo => self.data.todos.today_items(now, self.offset_min).iter().any(|t| !t.done),
         }
@@ -201,7 +194,6 @@ impl AppState {
     pub fn is_activity_visible_on_hover(&self, tab: Tab, now: i64) -> bool {
         match tab {
             Tab::Music => self.media.as_ref().is_some_and(|m| m.playing || !m.title.is_empty()),
-            Tab::Focus => self.pomodoro.is_active(),
             Tab::Todo => !self.data.todos.today_pending(now, self.offset_min).is_empty(),
         }
     }
@@ -303,18 +295,6 @@ impl AppState {
         if self.banner.as_ref().is_some_and(|b| b.until <= now) {
             self.banner = None;
         }
-        if let Some(finished) = self.pomodoro.poll(now) {
-            let (icon, body) = match finished {
-                Phase::Focus => {
-                    self.data.add_focus(time::local_day(now, self.offset_min));
-                    self.mark_data_dirty(now);
-                    (BannerIcon::Focus, t(lang, Key::FocusDone))
-                }
-                _ => (BannerIcon::Break, t(lang, Key::BreakDone)),
-            };
-            self.banner(icon, "Ailan", body, now + BANNER_MS);
-            out.push(Notification { title: "Ailan".into(), body: body.into() });
-        }
         let rang = self.data.alarms.take_due(now, self.offset_min);
         if let Some((id, label)) = rang.first() {
             self.mark_data_dirty(now);
@@ -359,19 +339,13 @@ impl AppState {
         if self.banner.as_ref().is_some_and(|b| b.until > now) {
             return Collapsed::Banner;
         }
-        let primary = self.primary_activity(now);
-        if primary == Some(Tab::Focus) {
-            return Collapsed::Timer;
-        }
-        // Clock tools sit right below Focus.
         if self.countdown.is_active() {
             return Collapsed::Countdown;
         }
         if self.stopwatch.is_active() {
             return Collapsed::Stopwatch;
         }
-        match primary {
-            Some(Tab::Focus) => Collapsed::Timer,
+        match self.primary_activity(now) {
             Some(Tab::Music) => Collapsed::Media,
             Some(Tab::Todo) => Collapsed::Todo,
             None => Collapsed::Minimal,
@@ -453,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_always_wins_then_music_then_todo() {
+    fn music_ranks_above_todo() {
         let mut s = state();
         // A task for today makes To-do live.
         s.data.todos.add_today("write".into(), None, 0, 0);
@@ -462,24 +436,10 @@ mod tests {
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
         assert_eq!(s.collapsed(0), Collapsed::Media);
         assert_eq!(s.hover_activities(0), vec![Tab::Music, Tab::Todo]);
-
-        // Focus takes over for the whole session — no alternating with Music.
-        s.pomodoro.start(0);
-        assert_eq!(s.hover_activities(0), vec![Tab::Focus, Tab::Music, Tab::Todo]);
-        for t in [0, 5_000, 30_000, 60_000, 65_000] {
-            assert_eq!(s.collapsed(t), Collapsed::Timer, "at {t}");
-        }
-        // Paused is still "focus on".
-        s.pomodoro.pause(10 * MINUTE);
-        assert_eq!(s.collapsed(10 * MINUTE), Collapsed::Timer);
-
-        // Session reset → back to Music.
-        s.pomodoro.reset();
-        assert_eq!(s.collapsed(0), Collapsed::Media);
     }
 
     #[test]
-    fn clock_tools_rank_below_focus_and_ring_as_banners() {
+    fn clock_tools_rank_above_music_and_ring_as_banners() {
         let mut s = state();
         s.apply(AppEvent::Media(Some(media("t", true))), 0);
         s.stopwatch.toggle(0);
@@ -487,9 +447,6 @@ mod tests {
         s.countdown = Countdown::new(MINUTE);
         s.countdown.toggle(0);
         assert_eq!(s.collapsed(0), Collapsed::Countdown, "timer above stopwatch");
-        s.pomodoro.start(0);
-        assert_eq!(s.collapsed(0), Collapsed::Timer, "focus still wins");
-        s.pomodoro.reset();
 
         let notes = s.tick(MINUTE);
         assert_eq!(s.banner.as_ref().map(|b| b.icon), Some(BannerIcon::TimerDone));
@@ -514,7 +471,7 @@ mod tests {
         s.data.todos.toggle(id, 0, 0);
         assert!(!s.is_activity_running(Tab::Todo, 0));
         // Due next week → not today.
-        s.data.todos.add("later".into(), Some(8 * time::DAY));
+        s.data.todos.add("later".into(), Some(8 * crate::time::DAY));
         assert!(!s.is_activity_running(Tab::Todo, 0));
         assert_eq!(s.collapsed(0), Collapsed::Minimal);
     }
@@ -546,18 +503,6 @@ mod tests {
         assert!(s.banner.is_none());
         s.apply(AppEvent::AudioDevice { name: "Buds".into(), headphones: true }, 0);
         assert_eq!(s.banner.as_ref().unwrap().icon, BannerIcon::Headphones);
-    }
-
-    #[test]
-    fn pomodoro_completion_counts_and_notifies() {
-        let mut s = state();
-        s.pomodoro.start(0);
-        assert!(s.tick(MINUTE).is_empty());
-        let n = s.tick(25 * MINUTE);
-        assert_eq!(n.len(), 1);
-        assert_eq!(s.data.focus_count(0), 1);
-        assert_eq!(s.take_save(25 * MINUTE, false), (false, false), "debounced");
-        assert_eq!(s.take_save(25 * MINUTE + SAVE_DEBOUNCE_MS, false), (false, true));
     }
 
     #[test]

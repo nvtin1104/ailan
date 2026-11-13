@@ -51,7 +51,6 @@ const T_HUB: usize = 6;
 const HOVER_INTENT_MS: u32 = 95;
 const COLLAPSE_DELAY_MS: u32 = 340;
 /// Flight tints (Hub accent colours) for things that jump into the island.
-const FLY_FOCUS: u32 = crate::hub::widgets::ACCENT_PRIMARY;
 const FLY_TODO: u32 = crate::hub::widgets::ACCENT_MINT;
 const FLY_REMIND: u32 = crate::hub::widgets::ACCENT_AMBER;
 const AUDIO_FRAME_MS: u32 = 30;

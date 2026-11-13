@@ -60,7 +60,7 @@ pub fn expanded_size(st: &AppState, tab: Tab, now: i64) -> (f32, f32) {
     }
     match tab {
         Tab::Todo => (380.0, 114.0),
-        Tab::Music | Tab::Focus => (380.0, 127.0),
+        Tab::Music => (380.0, 127.0),
     }
 }
 
@@ -70,7 +70,7 @@ pub(super) fn expanded_layout(st: &AppState, tab: Tab, now: i64) -> (f32, f32) {
     }
     match tab {
         Tab::Todo => (420.0, 126.0),
-        Tab::Music | Tab::Focus => (420.0, 140.0),
+        Tab::Music => (420.0, 140.0),
     }
 }
 
@@ -84,7 +84,7 @@ pub(super) const TODO_ROWS: usize = 2;
 
 pub fn collapsed_size(mode: Collapsed) -> (f32, f32) {
     match mode {
-        Collapsed::Minimal | Collapsed::Media | Collapsed::Timer | Collapsed::Todo => (150.0, 30.0),
+        Collapsed::Minimal | Collapsed::Media | Collapsed::Todo => (150.0, 30.0),
         Collapsed::Countdown | Collapsed::Stopwatch => (150.0, 30.0),
         // Alerts stay a slim one-line pill instead of a big card.
         Collapsed::Osd => (240.0, 34.0),
@@ -151,9 +151,6 @@ pub enum Action {
     MediaPrev,
     MediaToggle,
     MediaNext,
-    TimerToggle,
-    TimerReset,
-    TimerSkip,
     TodoInput,
     TodoToggle(u64),
     TodoDelete(u64),

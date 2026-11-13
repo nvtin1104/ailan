@@ -8,7 +8,7 @@ use ailan_core::todo::{due_token, Todo};
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use crate::hub::widgets::*;
 use crate::hub::{Field, HubAction, PageCtx, TodoFilter};
-use crate::ui::{G_ADD, G_CHECKMARK, G_CHEVRON_LEFT, G_TIMER};
+use crate::ui::{G_ADD, G_CHECKMARK, G_CHEVRON_LEFT};
 
 const ROW_H: f32 = 46.0;
 const ROW_STEP: f32 = 52.0;
@@ -46,7 +46,6 @@ pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, frame
         Some(
             HubAction::TodoToggle(x)
                 | HubAction::TodoDelete(x)
-                | HubAction::FocusOnTodo(x)
                 | HubAction::ShiftTodoDate(x, _)
                 | HubAction::SetTodoToday(x)
         ) if x == id
@@ -68,10 +67,7 @@ pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, frame
 
     // Hover actions (registered always so moving onto them keeps the row hot).
     let mut right = row.right() - 8.0;
-    let mut actions: Vec<(HubAction, char, bool)> = vec![(HubAction::TodoDelete(id), '\u{E74D}', false)];
-    if !item.done {
-        actions.push((HubAction::FocusOnTodo(id), G_TIMER, false));
-    }
+    let actions: Vec<(HubAction, char, bool)> = vec![(HubAction::TodoDelete(id), '\u{E74D}', false)];
     for (act, glyph, active) in &actions {
         let br = Rect::new(right - 28.0, cy - 14.0, 28.0, 28.0);
         if hot {

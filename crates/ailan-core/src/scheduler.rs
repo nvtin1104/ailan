@@ -23,7 +23,6 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
     };
 
     // Always-on, even when hidden: timers, reminders, saves.
-    add(s.pomodoro.ends_at());
     add(s.data.todos.next_due());
     add(s.data.alarms.next_due(now, s.offset_min));
     add(s.countdown.ends_at());
@@ -40,19 +39,6 @@ pub fn next_deadline(s: &AppState, now: i64, view: View) -> Option<i64> {
         // "Today's tasks" roll over at local midnight.
         if s.collapsed(now) == Collapsed::Todo {
             add(Some(time::local_midnight(now, s.offset_min) + time::DAY));
-        }
-
-        if s.pomodoro.is_running() {
-            let rem = s.pomodoro.remaining(now);
-            if view.expanded && view.tab == Tab::Focus {
-                // Tick on each displayed second.
-                let r = rem % 1000;
-                add(Some(now + if r == 0 { 1000 } else { r }));
-            } else {
-                // Collapsed shows whole minutes remaining.
-                let r = rem % time::MINUTE;
-                add(Some(now + if r == 0 { time::MINUTE } else { r }));
-            }
         }
 
         // Countdown / stopwatch on the collapsed island show seconds.
@@ -102,17 +88,6 @@ mod tests {
         // Idle rests in Minimal (eyes) with no clock -> no wakeup.
         assert_eq!(next_deadline(&s, 0, view(false, Tab::Music)), None);
         assert_eq!(next_deadline(&s, 0, View { expanded: false, tab: Tab::Music, hidden: true }), None);
-    }
-
-    #[test]
-    fn timer_ticks_per_minute_collapsed_and_per_second_expanded() {
-        let mut s = AppState::new(Settings::default(), Data::default(), 0);
-        s.pomodoro.start(0);
-        // Collapsed shows whole minutes: wake at the next minute boundary of the countdown.
-        assert_eq!(next_deadline(&s, 500, view(false, Tab::Music)), Some(MINUTE));
-        assert_eq!(next_deadline(&s, 6_000, view(false, Tab::Music)), Some(MINUTE));
-        // Expanded on Focus: next second.
-        assert_eq!(next_deadline(&s, 500, view(true, Tab::Focus)), Some(1000));
     }
 
     #[test]

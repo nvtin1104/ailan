@@ -17,7 +17,6 @@ pub mod settings;
 pub mod state;
 pub mod storage;
 pub mod time;
-pub mod timer;
 pub mod todo;
 
 pub use event::AppEvent;

@@ -59,7 +59,6 @@ fn run(t0: Instant) -> Result<()> {
     let stats = std::env::args().any(|a| a == "--stats");
     let pin_tab = std::env::args().find_map(|a| match a.as_str() {
         "--expand=music" => Some(ailan_core::settings::Tab::Music),
-        "--expand=focus" => Some(ailan_core::settings::Tab::Focus),
         "--expand=todo" => Some(ailan_core::settings::Tab::Todo),
         _ => None,
     });

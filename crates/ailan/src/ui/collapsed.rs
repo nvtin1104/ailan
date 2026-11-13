@@ -2,7 +2,7 @@
 
 use ailan_core::clock::{fmt_hms, fmt_stopwatch};
 use ailan_core::state::{BannerIcon, Collapsed, OsdKind};
-use ailan_core::time::{civil, fmt_duration};
+use ailan_core::time::civil;
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect};
@@ -38,16 +38,6 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
             draw_status_ring(cv, st, p.x + 20.0, cy);
             let time_s = format!("{:02}:{:02}", c.hour, c.minute);
             cv.text(&time_s, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
-        }
-        Collapsed::Timer => {
-            // Focus progress ring + remaining time.
-            let (rx, r) = (p.x + 20.0, 5.4);
-            cv.stroke_circle(rx, cy, r, 2.2, WHITE, 0.24);
-            cv.stroke_arc(rx, cy, r, -90.0, st.pomodoro.progress(v.now).clamp(0.0, 1.0) * 360.0, 2.2, WHITE, 0.95);
-            let label = fmt_duration(st.pomodoro.remaining(v.now));
-            let alpha = if st.pomodoro.is_running() { 0.98 } else { 0.62 };
-            cv.text(&label, Font::text(14.5, 700, Align::Center), p, WHITE, alpha);
             draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
         }
         Collapsed::Countdown => {

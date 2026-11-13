@@ -1,10 +1,9 @@
 //! User settings (settings.toml) and persisted data (data.json).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::clock::{Alarms, WorldClock};
 use crate::i18n::Lang;
-use crate::timer::Durations;
 use crate::todo::Todos;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -12,28 +11,30 @@ use crate::todo::Todos;
 pub enum Tab {
     #[default]
     Music,
-    Focus,
     Todo,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Focus, Tab::Music, Tab::Todo];
+    pub const ALL: [Tab; 2] = [Tab::Music, Tab::Todo];
 
     pub fn next(self) -> Self {
         match self {
-            Tab::Focus => Tab::Music,
             Tab::Music => Tab::Todo,
-            Tab::Todo => Tab::Focus,
+            Tab::Todo => Tab::Music,
         }
     }
 
     pub fn prev(self) -> Self {
-        match self {
-            Tab::Focus => Tab::Todo,
-            Tab::Music => Tab::Focus,
-            Tab::Todo => Tab::Music,
-        }
+        self.next()
     }
+}
+
+fn de_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(match s.as_str() {
+        "todo" => Tab::Todo,
+        _ => Tab::Music,
+    })
 }
 
 /// User settings. The Dynamic Island has a single fixed behaviour (no modes, priority or
@@ -43,8 +44,8 @@ impl Tab {
 pub struct Settings {
     /// `None` until first run, then filled from the system locale.
     pub lang: Option<Lang>,
-    pub durations: Durations,
     /// Primary/selected activity shown when the notch expands.
+    #[serde(deserialize_with = "de_tab")]
     pub tab: Tab,
     /// Disable spring animations (accessibility / very slow machines).
     pub reduce_motion: bool,
@@ -63,7 +64,7 @@ pub enum HubPage {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, durations: Durations::default(), tab: Tab::Focus, reduce_motion: false }
+        Self { lang: None, tab: Tab::Music, reduce_motion: false }
     }
 }
 

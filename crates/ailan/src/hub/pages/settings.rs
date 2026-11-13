@@ -3,9 +3,9 @@
 use ailan_core::i18n::{t, Key, Lang};
 use ailan_core::AppState;
 
-use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
+use crate::gfx::{Align, Canvas, Font, Rect};
 use crate::hub::widgets::*;
-use crate::hub::{HubAction, HubHit, PomoField};
+use crate::hub::{HubAction, HubHit};
 use crate::platform::autostart;
 use crate::ui::BG;
 
@@ -115,75 +115,9 @@ pub fn draw(
         action: HubAction::ToggleReduceMotion,
     });
 
-    y += 68.0;
+    y += 74.0;
 
-    // 2. Focus & Pomodoro Settings — four freely adjustable values.
-    draw_section_hdr(cv, Rect::new(r.x, y, r.w, 22.0), t(lang, Key::Pomodoro));
-    y += 24.0;
-
-    let d = st.settings.durations;
-    let unit_min = t(lang, Key::MinuteShort);
-    let rows = [
-        (PomoField::Focus, Key::PomoWorkDuration, Key::PomoWorkSub, d.focus_min, unit_min),
-        (PomoField::ShortBreak, Key::PomoBreakDuration, Key::PomoBreakSub, d.short_min, unit_min),
-        (PomoField::LongBreak, Key::PomoLongDuration, Key::PomoLongSub, d.long_min, unit_min),
-        (PomoField::Every, Key::PomoEvery, Key::PomoEverySub, d.long_every, t(lang, Key::SessionsUnit)),
-    ];
-    let compact = r.w < 500.0;
-    for (field, title, sub, value, unit) in rows {
-        let card = Rect::new(r.x, y, r.w, 58.0);
-        draw_glass_card(cv, card, RADIUS_ITEM, 0.0);
-        let (lo, hi, step) = field.range();
-
-        // Stepper: [−]  value unit  [+]
-        let sw = 150.0;
-        let srect = Rect::new(card.right() - 10.0 - sw, card.y + 12.0, sw, 34.0);
-        cv.fill_round(srect, 17.0, BG_INPUT, 0.9);
-        cv.hairline_round(srect, 17.0, GLASS_SPECULAR, 0.10);
-        let minus = HubAction::AdjustPomo(field, -step);
-        let plus = HubAction::AdjustPomo(field, step);
-        let mr = Rect::new(srect.x + 3.0, srect.y + 3.0, 28.0, 28.0);
-        let pr = Rect::new(srect.right() - 31.0, srect.y + 3.0, 28.0, 28.0);
-        let hv = |a: HubAction| if hover == Some(a) { 1.0 } else { 0.0 };
-        if value > lo {
-            draw_icon_button(cv, mr, '\u{E738}', 10.0, hv(minus), false, ACCENT_PRIMARY);
-            hits.push(HubHit { rect: mr, action: minus });
-        } else {
-            cv.glyph('\u{E738}', 10.0, mr, TEXT_FAINT, 0.5);
-        }
-        if value < hi {
-            draw_icon_button(cv, pr, '\u{E710}', 10.0, hv(plus), false, ACCENT_PRIMARY);
-            hits.push(HubHit { rect: pr, action: plus });
-        } else {
-            cv.glyph('\u{E710}', 10.0, pr, TEXT_FAINT, 0.5);
-        }
-        let vtxt = format!("{value} {unit}");
-        cv.text_styled(&vtxt, Font::text(14.0, 700, Align::Center), Rect::new(mr.right(), srect.y, pr.x - mr.right(), srect.h), TEXT_PRIMARY, 1.0, TextStyle::TABULAR);
-
-        // Quick presets for the focus length (Full mode only).
-        let mut text_right = srect.x - 12.0;
-        if field == PomoField::Focus && !compact {
-            let presets = [15u16, 25, 45, 60];
-            let (bw, bh) = (44.0, 28.0);
-            let mut bx = srect.x - 12.0 - presets.len() as f32 * (bw + 6.0);
-            text_right = bx - 8.0;
-            for min in presets {
-                let pb = Rect::new(bx, card.y + (card.h - bh) * 0.5, bw, bh);
-                let act = HubAction::SetPomoWork(min);
-                draw_chip(cv, pb, &format!("{min}"), value == min as u32, hv(act));
-                hits.push(HubHit { rect: pb, action: act });
-                bx += bw + 6.0;
-            }
-        }
-
-        let tw = (text_right - card.x - 14.0).max(0.0);
-        cv.text(t(lang, title), Font::text(12.5, 600, Align::Left), Rect::new(card.x + 14.0, card.y + 11.0, tw, 18.0), TEXT_PRIMARY, 0.98);
-        cv.text(t(lang, sub), Font::text(11.0, 400, Align::Left), Rect::new(card.x + 14.0, card.y + 30.0, tw, 16.0), TEXT_FAINT, 0.9);
-        y += 66.0;
-    }
-    y += 6.0;
-
-    // 3. About Card
+    // 2. About Card
     draw_section_hdr(cv, Rect::new(r.x, y, r.w, 22.0), t(lang, Key::AboutAiLan));
     y += 24.0;
 

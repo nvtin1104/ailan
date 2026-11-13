@@ -174,7 +174,7 @@ fn draw_brief(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     let lang = cx.lang();
     let st = cx.st;
     let off = st.offset_min;
-    let b = smart_brief(&st.data.todos, cx.now, off, st.pomodoro.durations.focus_min);
+    let b = smart_brief(&st.data.todos, cx.now, off, 25);
     cx.card(cv, r, RADIUS_CARD, 0.0);
     cv.text("✦", Font::text(12.0, 400, Align::Center), Rect::new(r.x + 12.0, r.y + 10.0, 18.0, 20.0), ACCENT_PRIMARY_HI, 1.0);
     draw_section_header(cv, Rect::new(r.x + 34.0, r.y + 12.0, r.w - 50.0, 16.0), t(lang, Key::BriefTitle));
@@ -217,15 +217,9 @@ fn draw_brief(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
             let span = format!("{} – {}", hhmm(s, off), hhmm(e, off));
             let sw = cv.text_width(&span, Font::text(14.0, 700, Align::Left), TextStyle::TABULAR);
             cv.text_styled(&span, Font::text(14.0, 700, Align::Left), Rect::new(fr.x + 34.0, fr.y, sw + 2.0, fr.h), TEXT_HERO, 1.0, TextStyle::TABULAR);
-            let bw = 92.0;
             if !cx.compact {
-                cv.text(t(lang, Key::BriefFreeSlot), FONT_META, Rect::new(fr.x + 44.0 + sw, fr.y, (fr.w - sw - bw - 60.0).max(0.0), fr.h), TEXT_BODY, 1.0);
+                cv.text(t(lang, Key::BriefFreeSlot), FONT_META, Rect::new(fr.x + 44.0 + sw, fr.y, (fr.w - sw - 54.0).max(0.0), fr.h), TEXT_BODY, 1.0);
             }
-            let start = HubAction::PomoToggle;
-            let br = Rect::new(fr.right() - bw - 6.0, fr.y + 6.0, bw, fr.h - 12.0);
-            let lbl = if st.pomodoro.is_running() { t(lang, Key::Pause) } else { t(lang, Key::Start) };
-            draw_button(cv, br, lbl, ButtonKind::Primary, cx.hover_t(start));
-            cx.hit(br, start);
         }
         None => {
             cv.glyph(G_TIMER, 12.0, Rect::new(fr.x + 8.0, fr.y, 22.0, fr.h), TEXT_SECTION, 1.0);

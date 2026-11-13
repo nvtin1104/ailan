@@ -3,11 +3,10 @@
 use ailan_core::i18n::{short_date, t, Key, Lang};
 use ailan_core::settings::Tab;
 use ailan_core::time::{civil, fmt_duration};
-use ailan_core::timer::Phase;
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect};
-use super::{draw_arrow_btn, draw_status_ring, draw_wave_bars, hover_amt, scale_rect, Action, Hit, View, BG, G_ADD, G_DELETE, G_HOME, G_MUSIC, G_NEXT, G_PAUSE, G_PLAY, G_PREV, G_RESET, TEXT_SOFT, TODO_ROWS, WHITE};
+use super::{draw_arrow_btn, draw_status_ring, draw_wave_bars, hover_amt, scale_rect, Action, Hit, View, G_ADD, G_DELETE, G_HOME, G_MUSIC, G_NEXT, G_PAUSE, G_PLAY, G_PREV, TEXT_SOFT, TODO_ROWS, WHITE};
 
 pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
     let lang = st.lang();
@@ -72,7 +71,6 @@ pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, h
     // 4. Main Activity Page Content.
     match active_tab {
         Tab::Music => draw_music(cv, st, v, page_r, hits),
-        Tab::Focus => draw_focus(cv, st, v, page_r, hits),
         Tab::Todo => draw_todo(cv, st, v, page_r, hits),
     }
 
@@ -234,182 +232,7 @@ fn draw_music_controls(cv: &mut Canvas, v: &View, p: Rect, playing: bool, hits: 
     ctl(cv, hits, p.x + 257.5, G_NEXT, 13.5, Action::MediaNext);
 }
 
-// ---- Page 2: Focus Timer / Pomodoro (`l-pomo` in 420×140) -----------------------
-
-fn draw_focus(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
-    let lang = st.lang();
-    let pomo = &st.pomodoro;
-    let rem = pomo.remaining(v.now);
-    let prog = pomo.progress(v.now).clamp(0.0, 1.0);
-    let total_rounds = pomo.durations.long_every.max(1).min(4);
-    let cur_round = (pomo.completed % total_rounds) + 1;
-
-    // Top-left title: "Pomodoro"
-    cv.text(
-        "Pomodoro",
-        Font::text(15.0, 650, Align::Left),
-        Rect::new(p.x + 15.0, p.y + 9.0, 115.0, 20.0),
-        WHITE,
-        1.0,
-    );
-
-    // ---- Left Column (x = 45..180) ----
-    let phase_name = match pomo.phase {
-        Phase::Focus => t(lang, Key::Focus),
-        Phase::ShortBreak => t(lang, Key::ShortBreak),
-        Phase::LongBreak => t(lang, Key::LongBreak),
-    };
-    let round_str = format!("{phase_name} · {cur_round} of {total_rounds}");
-    cv.text(
-        &round_str,
-        Font::text(10.5, 500, Align::Left),
-        Rect::new(p.x + 46.0, p.y + 28.0, 140.0, 14.0),
-        WHITE,
-        0.55,
-    );
-
-    // Big 28px countdown timer at (45, 41)
-    cv.text(
-        &fmt_duration(rem),
-        Font::text(28.0, 700, Align::Left),
-        Rect::new(p.x + 45.0, p.y + 41.0, 140.0, 34.0),
-        WHITE,
-        1.0,
-    );
-
-    // End clock time + "until done" at y = 79
-    let end_civil = civil(v.now + rem, st.offset_min);
-    let end_time_s = format!("{:02}:{:02}", end_civil.hour, end_civil.minute);
-    cv.text(
-        &end_time_s,
-        Font::text(13.5, 650, Align::Left),
-        Rect::new(p.x + 46.0, p.y + 77.0, 44.0, 18.0),
-        WHITE,
-        0.96,
-    );
-    let until_lbl = if lang == Lang::Vi { "đến khi xong" } else { "until done" };
-    cv.text(
-        until_lbl,
-        Font::text(11.5, 600, Align::Left),
-        Rect::new(p.x + 92.0, p.y + 78.0, 96.0, 18.0),
-        TEXT_SOFT,
-        0.90,
-    );
-
-    // Left 128×4 monochrome progress bar at (46, 106)
-    let lbar = Rect::new(p.x + 46.0, p.y + 106.0, 128.0, 4.0);
-    cv.fill_round(lbar, 2.0, WHITE, 0.16);
-    if prog > 0.002 {
-        let fw = (lbar.w * prog).max(4.0);
-        cv.fill_round(Rect::new(lbar.x, lbar.y, fw, lbar.h), 2.0, WHITE, 0.96);
-    }
-
-    // ---- Vertical Divider at x = 192, top = 30, h = 88 ----
-    cv.fill_rect(Rect::new(p.x + 192.0, p.y + 30.0, 1.0, 88.0), WHITE, 0.12);
-
-    // ---- Right Column (x = 206..380) ----
-    let this_round_lbl = if lang == Lang::Vi { "Vòng này" } else { "This round" };
-    cv.text(
-        this_round_lbl,
-        Font::text(10.5, 500, Align::Left),
-        Rect::new(p.x + 206.0, p.y + 30.0, 80.0, 18.0),
-        WHITE,
-        0.55,
-    );
-
-    // Pause / Start pill button at (292, 30, 60×20) without hover scaling
-    let pause_r = Rect::new(p.x + 292.0, p.y + 30.0, 60.0, 20.0);
-    let h_pause = hover_amt(v, Action::TimerToggle);
-    if pomo.is_running() {
-        cv.fill_round(pause_r, pause_r.h * 0.5, WHITE, 0.92);
-        cv.text(t(lang, Key::Pause), Font::text(10.5, 700, Align::Center), pause_r, BG, 1.0);
-    } else {
-        cv.fill_round(pause_r, pause_r.h * 0.5, WHITE, 0.14 + 0.10 * h_pause);
-        cv.text(t(lang, Key::Start), Font::text(10.5, 700, Align::Center), pause_r, WHITE, 0.98);
-    }
-    hits.push(Hit { rect: pause_r, action: Action::TimerToggle });
-
-    // Reset circular button at (358, 31, 18×18) without hover scaling
-    let reset_r = Rect::new(p.x + 358.0, p.y + 31.0, 18.0, 18.0);
-    let h_reset = hover_amt(v, Action::TimerReset);
-    cv.fill_circle(reset_r.x + 9.0, reset_r.y + 9.0, 9.0, WHITE, 0.12 + 0.12 * h_reset);
-    cv.glyph(G_RESET, 9.5, reset_r, WHITE, 0.92);
-    hits.push(Hit { rect: reset_r.inset(-2.0, -2.0), action: Action::TimerReset });
-
-    // Segmented round timeline at y = 71 (monochrome white/gray)
-    let segs: [(f32, f32, bool); 8] = [
-        (206.00, 28.65, true),
-        (237.65, 5.73, false),
-        (246.38, 28.65, true),
-        (278.03, 5.73, false),
-        (286.76, 28.65, true),
-        (318.41, 5.73, false),
-        (327.14, 28.65, true),
-        (358.79, 17.19, false),
-    ];
-    let active_seg_idx = match pomo.phase {
-        Phase::Focus => ((cur_round - 1) as usize * 2).min(6),
-        Phase::ShortBreak => ((cur_round.saturating_sub(1) as usize) * 2 + 1).min(5),
-        Phase::LongBreak => 7,
-    };
-
-    let mut head_x = p.x + segs[active_seg_idx].0;
-    for (i, &(sx, sw, _is_focus)) in segs.iter().enumerate() {
-        let sr = Rect::new(p.x + sx, p.y + 71.0, sw, 6.0);
-        cv.fill_round(sr, 3.0, WHITE, 0.14);
-        if i < active_seg_idx {
-            cv.fill_round(sr, 3.0, WHITE, 0.85);
-        } else if i == active_seg_idx {
-            let fw = (sw * prog).max(3.5);
-            cv.fill_round(Rect::new(sr.x, sr.y, fw, sr.h), 3.0, WHITE, 1.0);
-            head_x = sr.x + fw;
-        }
-    }
-
-    cv.fill_circle(head_x, p.y + 74.0, 6.5, WHITE, 0.25);
-    cv.fill_circle(head_x, p.y + 74.0, 3.2, WHITE, 1.0);
-
-    let labels: [(f32, &str, usize); 5] = [
-        (220.33, "1", 0),
-        (260.71, "2", 2),
-        (301.08, "3", 4),
-        (341.46, "4", 6),
-        (367.39, "Long", 7),
-    ];
-    for (lx, txt, seg_i) in labels {
-        let is_on = seg_i == active_seg_idx;
-        let is_past = seg_i < active_seg_idx;
-        let a = if is_on { 1.0 } else if is_past { 0.72 } else { 0.38 };
-        let w = if is_on { 700 } else { 600 };
-        cv.text(
-            txt,
-            Font::text(8.6, w, Align::Center),
-            Rect::new(p.x + lx - 14.0, p.y + 81.0, 28.0, 12.0),
-            WHITE,
-            a,
-        );
-    }
-
-    let total_min = pomo.durations.focus_min * total_rounds
-        + pomo.durations.short_min * total_rounds.saturating_sub(1)
-        + pomo.durations.long_min;
-    let hrs = total_min / 60;
-    let mins = total_min % 60;
-    let summary = if hrs > 0 {
-        format!("{hrs} h {mins} min · {total_rounds} sessions")
-    } else {
-        format!("{mins} min · {total_rounds} sessions")
-    };
-    cv.text(
-        &summary,
-        Font::text(9.5, 400, Align::Left),
-        Rect::new(p.x + 206.0, p.y + 99.0, 172.0, 14.0),
-        WHITE,
-        0.50,
-    );
-}
-
-// ---- Page 3: To-do (`l-todo` in 420×82 when empty, 420×126 with tasks) ----------
+// ---- Page 2: To-do (`l-todo` in 420×82 when empty, 420×126 with tasks) ----------
 
 fn draw_todo(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
     let lang = st.lang();

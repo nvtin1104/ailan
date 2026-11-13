@@ -31,43 +31,6 @@ impl TodoFilter {
     }
 }
 
-/// Editable Pomodoro settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PomoField {
-    Focus,
-    ShortBreak,
-    LongBreak,
-    /// Focus sessions before a long break.
-    Every,
-}
-
-impl PomoField {
-    /// `(min, max, step)` for the stepper.
-    pub fn range(self) -> (u32, u32, i16) {
-        match self {
-            PomoField::Focus => (5, 180, 5),
-            PomoField::ShortBreak => (1, 30, 1),
-            PomoField::LongBreak => (5, 60, 5),
-            PomoField::Every => (2, 8, 1),
-        }
-    }
-
-    /// Apply `delta` to `d`, clamped to the field's range. Returns `true` if it changed.
-    pub fn apply(self, d: &mut ailan_core::timer::Durations, delta: i16) -> bool {
-        let (lo, hi, _) = self.range();
-        let v = match self {
-            PomoField::Focus => &mut d.focus_min,
-            PomoField::ShortBreak => &mut d.short_min,
-            PomoField::LongBreak => &mut d.long_min,
-            PomoField::Every => &mut d.long_every,
-        };
-        let new = (*v as i64 + delta as i64).clamp(lo as i64, hi as i64) as u32;
-        let changed = new != *v;
-        *v = new;
-        changed
-    }
-}
-
 /// Text fields that can own keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -112,19 +75,7 @@ pub enum HubAction {
     ShiftTodoDate(u64, i32),
     SetTodoToday(u64),
     SetTodoFilter(TodoFilter),
-    FocusOnTodo(u64),
     ToggleBucket(u8),
-
-    // Pomodoro actions
-    PomoToggle,
-    FocusToggle,
-    PomoReset,
-    FocusReset,
-    PomoSkip,
-    SetPomoWork(u16),
-    SetPomoBreak(u16),
-    /// Step one Pomodoro setting by a delta (minutes, or sessions for `Every`).
-    AdjustPomo(PomoField, i16),
 
     // Media actions
     MediaPlayPause,
@@ -230,25 +181,5 @@ impl PageCtx<'_> {
     /// `(scale, tick progress)` of a todo's checkbox animation.
     pub fn check_anim(&self, id: u64) -> (f32, f32) {
         self.pops.iter().find(|p| p.id == id).map(|p| (p.scale(), p.tick())).unwrap_or((1.0, 1.0))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::PomoField;
-    use ailan_core::timer::Durations;
-
-    #[test]
-    fn pomodoro_steps_are_clamped() {
-        let mut d = Durations::default();
-        assert!(PomoField::Focus.apply(&mut d, 5));
-        assert_eq!(d.focus_min, 30);
-        assert!(PomoField::ShortBreak.apply(&mut d, -10));
-        assert_eq!(d.short_min, 1, "never below one minute");
-        assert!(!PomoField::ShortBreak.apply(&mut d, -1), "already at the minimum");
-        PomoField::Every.apply(&mut d, 100);
-        assert_eq!(d.long_every, 8);
-        PomoField::LongBreak.apply(&mut d, -5);
-        assert_eq!(d.long_min, 10);
     }
 }

@@ -79,7 +79,6 @@ impl App {
         let visible = self.state.hover_activities(now);
         if !visible.is_empty() {
             let preferred = match self.mode {
-                Collapsed::Timer => Some(Tab::Focus),
                 Collapsed::Media => Some(Tab::Music),
                 Collapsed::Todo => Some(Tab::Todo),
                 _ => self.state.primary_activity(now),
@@ -238,11 +237,6 @@ impl App {
             Action::MediaPrev => self.media.send(MediaCmd::Previous),
             Action::MediaToggle => self.media.send(MediaCmd::TogglePlayPause),
             Action::MediaNext => self.media.send(MediaCmd::Next),
-            Action::TimerToggle => {
-                self.state.pomodoro.toggle(now);
-            }
-            Action::TimerReset => self.state.pomodoro.reset(),
-            Action::TimerSkip => self.state.pomodoro.skip(),
             Action::TodoInput => self.begin_editing(),
             Action::TodoToggle(id) => {
                 self.state.data.todos.toggle(id, now, self.state.offset_min);
