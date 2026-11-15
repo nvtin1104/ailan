@@ -101,7 +101,8 @@ impl Audio {
         Ok(())
     }
 
-    /// Reads real-time output audio peak (`0.0..=1.0`) and stereo L/R peaks from Windows Core Audio.
+    /// Reads real-time output peaks. Kept for a later visual; the island no longer draws audio bars.
+    #[allow(dead_code)]
     pub fn sample_peaks(&self) -> (f32, [f32; 2]) {
         let Some(meter) = &self.meter else {
             return (0.0, [0.0, 0.0]);

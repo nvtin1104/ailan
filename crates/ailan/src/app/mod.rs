@@ -12,19 +12,20 @@ use ailan_core::event::Artwork;
 use ailan_core::i18n::{t, Key};
 use ailan_core::scheduler::{self, View as SchedView};
 use ailan_core::settings::{HubPage, Settings, Tab};
-use ailan_core::state::Collapsed;
+use ailan_core::state::{BannerIcon, Collapsed};
 use ailan_core::storage::{self, Format};
 use ailan_core::{AppEvent, AppState};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::Graphics::Direct2D::ID2D1BitmapBrush1;
 use windows::Win32::Graphics::Gdi::{
-    CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromPoint,
-    SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
+    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW,
+    MonitorFromPoint, SetWindowRgn, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTOPRIMARY, RGN_OR,
 };
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::Win32::UI::WindowsAndMessaging::{self, *};
 
 use crate::gfx::Gfx;
 use crate::hub::controller::HubController;
@@ -41,19 +42,13 @@ mod hub_host;
 mod notch;
 
 const T_TICK: usize = 1;
-const T_HOVER: usize = 2;
-const T_COLLAPSE: usize = 3;
 const T_STATS: usize = 4;
-const T_AUDIO: usize = 5;
 /// Hub refresh while a live clock tool is on screen (stopwatch, timer, world clock).
 const T_HUB: usize = 6;
 
-const HOVER_INTENT_MS: u32 = 95;
-const COLLAPSE_DELAY_MS: u32 = 340;
-/// Flight tints (Hub accent colours) for things that jump into the island.
+/// Flight tints for icons that jump into the island. Not used as pill fills.
 const FLY_TODO: u32 = crate::hub::widgets::ACCENT_MINT;
 const FLY_REMIND: u32 = crate::hub::widgets::ACCENT_AMBER;
-const AUDIO_FRAME_MS: u32 = 30;
 const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
 
@@ -68,6 +63,13 @@ fn apply_cursor_icon(icon: ui::CursorIcon) {
             let _ = SetCursor(Some(c));
         }
     }
+}
+
+/// Pointer capture that distinguishes a click from a drag.
+struct Grab {
+    sx: i32,
+    sy: i32,
+    dragging: bool,
 }
 
 #[derive(Default)]
@@ -97,9 +99,6 @@ pub struct App {
     e: Spring,
     hover_anim: Spring,
     tab_pos: Spring,
-    audio_bars: [f32; 5],
-    audio_peak: f32,
-    audio_timer_on: bool,
     mode: Collapsed,
     tab: Tab,
     input: Option<String>,
@@ -109,12 +108,18 @@ pub struct App {
     hover: Option<Action>,
     cursor: Option<(f32, f32)>,
     mouse_inside: bool,
-    /// Idle-eye gaze springs (DIP offsets) and whether raw mouse input is registered.
-    eye_x: Spring,
-    eye_y: Spring,
-    raw_mouse: bool,
-    /// Notch window origin on screen (px), for mapping the global cursor to the eyes.
+    /// Notch window origin on screen (px).
     origin: (i32, i32),
+    /// Edge / corner / float silhouette. Forced to `Float` while dragging.
+    dock: ui::Dock,
+    grab: Option<Grab>,
+    /// Ignore clicks until this timestamp so a double-click does not toggle twice.
+    eat_until: i64,
+    /// Measured banner/OSD width in DIP.
+    alert_w: f32,
+    alert_key: String,
+    edit: HWND,
+    scale_y: f32,
     /// Hub → island flight overlay, and when the last one landed (for the glow).
     flight: Option<crate::platform::flight::Flight>,
     tz: crate::platform::tz::TzCache,
@@ -124,6 +129,7 @@ pub struct App {
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
     scale: f32,
+    /// Hit-region cache: left, top, right, bottom, radius, dock discriminant.
     region: (i32, i32, i32, i32, i32, i32),
     needs_draw: bool,
     last_frame: Instant,
@@ -165,7 +171,7 @@ impl App {
         let sink = EventSink::new(tx, hwnd);
         let state = AppState::new(init.settings, init.data, sys::utc_offset_min());
         let mode = state.collapsed(sys::now_ms());
-        let (cw, ch) = ui::collapsed_size(mode);
+        let (cw, ch) = ui::collapsed_size(mode, ui::REST_W, ui::Dock::Top);
 
         let media = media::spawn(sink.clone());
         let audio = Audio::new(sink.clone()).map_err(|e| log::warn!("audio: {e}")).ok();
@@ -194,9 +200,6 @@ impl App {
             e: Spring::new(0.0).with(340.0, 37.0),
             hover_anim: Spring::new(0.0).with(620.0, 38.0),
             tab_pos: Spring::new(init_pos).with(440.0, 34.0),
-            audio_bars: [0.22; 5],
-            audio_peak: 0.0,
-            audio_timer_on: false,
             mode,
             tab,
             input: None,
@@ -206,10 +209,14 @@ impl App {
             hover: None,
             cursor: None,
             mouse_inside: false,
-            eye_x: Spring::new(0.0).with(220.0, 26.0),
-            eye_y: Spring::new(0.0).with(220.0, 26.0),
-            raw_mouse: false,
             origin: (0, 0),
+            dock: ui::Dock::Top,
+            grab: None,
+            eat_until: 0,
+            alert_w: ui::REST_W,
+            alert_key: String::new(),
+            edit: HWND::default(),
+            scale_y: 1.0,
             flight: crate::platform::flight::Flight::create()
                 .map_err(|e| log::warn!("flight overlay unavailable: {e}"))
                 .ok(),
@@ -248,8 +255,14 @@ impl App {
             app.tab = tab;
             app.tab_pos.value = visible_index(&app.state, tab, sys::now_ms());
         }
+        app.hub_ctrl.select_page(app.state.settings.hub_page);
+        if let (Some(w), Some(h)) = (app.state.settings.hub_w, app.state.settings.hub_h) {
+            app.hub_ctrl.apply_size(w, h);
+        }
         if init.open_hub {
-            app.hub_ctrl.is_compact = init.hub_compact;
+            if init.hub_compact {
+                app.hub_ctrl.apply_size(380.0, 600.0);
+            }
             app.open_hub(init.hub_page);
         }
         app.after_change();
@@ -258,58 +271,378 @@ impl App {
 
     // ---- geometry ----------------------------------------------------------------
 
-    /// Position at the top-centre of the primary monitor and size the swapchain.
+    /// Place the cap window from the saved anchor, or top-centre of the primary work area.
     fn place(&mut self) -> windows::core::Result<()> {
+        let (mon, device, work) = self.resolve_anchor_monitor();
+        self.apply_monitor_dpi(mon);
+        self.dock = self.dock_from_settings(work);
+        if !self.expanded {
+            let (cw, ch) = ui::collapsed_size(self.mode, self.alert_w, self.dock);
+            self.w.value = cw;
+            self.w.set_target(cw);
+            self.h.value = ch;
+            self.h.set_target(ch);
+        }
+        let (wpx, hpx) = self.cap_px();
+        let (x, y) = self.origin_for(work, wpx, hpx);
+        self.commit_origin(x, y, wpx, hpx)?;
+        let _ = device;
+        Ok(())
+    }
+
+    fn dock_from_settings(&self, work: windows::Win32::Foundation::RECT) -> ui::Dock {
+        let (Some(ax), Some(ay)) = (self.state.settings.anchor_x, self.state.settings.anchor_y) else {
+            return ui::Dock::Top;
+        };
+        let ww = (work.right - work.left).max(1) as f32;
+        let wh = (work.bottom - work.top).max(1) as f32;
+        let cx = work.left + (ax.clamp(0.0, 1.0) * ww).round() as i32;
+        let cy = work.top + (ay.clamp(0.0, 1.0) * wh).round() as i32;
+        let pw = (ui::REST_W * self.scale).ceil() as i32;
+        let ph = (ui::REST_H * self.scale_y).ceil() as i32;
+        let corner = (ui::SNAP_CORNER_DIP * self.scale).round() as i32;
+        ui::Dock::snap_perimeter(cx, cy, pw, ph, (work.left, work.top, work.right, work.bottom), corner).0
+    }
+
+    /// DPI changed while dragging: resize the cap, keep following the cursor.
+    pub(super) fn refresh_scale_keep_origin(&mut self) -> windows::core::Result<()> {
+        let mut pt = POINT::default();
         unsafe {
-            let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            let _ = GetMonitorInfoW(mon, &mut mi);
-            let (mut dx, mut dy) = (96u32, 96u32);
+            let _ = GetCursorPos(&mut pt);
+        }
+        let mon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+        self.apply_monitor_dpi(mon);
+        let (wpx, hpx) = self.cap_px();
+        self.commit_origin(self.origin.0, self.origin.1, wpx, hpx)
+    }
+
+    fn cap_px(&self) -> (i32, i32) {
+        ((ui::WIN_W * self.scale).ceil() as i32, (ui::WIN_H * self.scale_y).ceil() as i32)
+    }
+
+    fn apply_monitor_dpi(&mut self, mon: HMONITOR) {
+        let (mut dx, mut dy) = (96u32, 96u32);
+        unsafe {
             let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-            self.scale = dx as f32 / 96.0;
-            let wpx = (ui::WIN_W * self.scale).ceil() as i32;
-            let hpx = (ui::WIN_H * self.scale).ceil() as i32;
-            let r = mi.rcMonitor;
-            let x = r.left + (r.right - r.left - wpx) / 2;
-            SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, r.top, wpx, hpx, SWP_NOACTIVATE)?;
-            self.origin = (x, r.top);
-            match self.gfx.as_mut() {
-                Some(g) => g.resize(wpx as u32, hpx as u32, self.scale)?,
-                None => self.gfx = Some(Gfx::new(self.hwnd, wpx as u32, hpx as u32, self.scale)?),
+        }
+        self.scale = dx as f32 / 96.0;
+        self.scale_y = dy as f32 / 96.0;
+    }
+
+    fn origin_for(&self, work: windows::Win32::Foundation::RECT, wpx: i32, hpx: i32) -> (i32, i32) {
+        let ww = (work.right - work.left).max(1);
+        let wh = (work.bottom - work.top).max(1);
+        let (ax, ay) = match (self.state.settings.anchor_x, self.state.settings.anchor_y) {
+            (Some(x), Some(y)) => (x, y),
+            _ => return (work.left + (ww - wpx) / 2, work.top),
+        };
+        let cx = work.left + (ax.clamp(0.0, 1.0) * ww as f32).round() as i32;
+        let cy = work.top + (ay.clamp(0.0, 1.0) * wh as f32).round() as i32;
+        let pill = ui::pill_rect(self.w.value, self.h.value, self.dock);
+        let pw = (pill.w * self.scale).ceil() as i32;
+        let ph = (pill.h * self.scale_y).ceil() as i32;
+        let x = match self.dock {
+            ui::Dock::Left | ui::Dock::TopLeft | ui::Dock::BottomLeft => work.left,
+            ui::Dock::Right | ui::Dock::TopRight | ui::Dock::BottomRight => work.right - wpx,
+            ui::Dock::Top | ui::Dock::Bottom => {
+                let left = (cx - pw / 2).clamp(work.left, (work.right - pw).max(work.left));
+                left - (pill.x * self.scale).round() as i32
             }
+        };
+        let y = match self.dock {
+            ui::Dock::Top | ui::Dock::TopLeft | ui::Dock::TopRight => work.top,
+            ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => work.bottom - hpx,
+            ui::Dock::Left | ui::Dock::Right => {
+                let top = (cy - ph / 2).clamp(work.top, (work.bottom - ph).max(work.top));
+                top - (pill.y * self.scale_y).round() as i32
+            }
+        };
+        (x, y)
+    }
+
+    fn commit_origin(&mut self, x: i32, y: i32, wpx: i32, hpx: i32) -> windows::core::Result<()> {
+        unsafe {
+            SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, wpx, hpx, SWP_NOACTIVATE)?;
+        }
+        self.origin = (x, y);
+        match self.gfx.as_mut() {
+            Some(g) => g.resize(wpx as u32, hpx as u32, self.scale)?,
+            None => self.gfx = Some(Gfx::new(self.hwnd, wpx as u32, hpx as u32, self.scale)?),
         }
         self.region = (0, 0, 0, 0, 0, 0);
         self.needs_draw = true;
         Ok(())
     }
 
-    /// Updates the exact hit-test window region (`SetWindowRgn`) matching the solid
-    /// notch body + top concave ear strip, preventing mouse hover pass-through to
-    /// background windows while inside the notch and allowing normal clicks outside.
-    fn update_region(&mut self) {
-        let p = ui::pill_rect(self.w.value, self.h.value);
-        let ear = ui::ear_for(self.e.value, self.mode);
-        let s = self.scale;
+    /// Silhouette used for layout / paint. Always docked to the screen perimeter.
+    pub(super) fn visual_dock(&self) -> ui::Dock {
+        self.dock
+    }
 
-        let pill_l = (p.x.max(0.0) * s).floor() as i32;
-        let pill_r = (p.right().min(ui::WIN_W) * s).ceil() as i32;
-        let pill_b = (p.bottom() * s).ceil() as i32;
-        let ear_l = ((p.x - ear).max(0.0) * s).floor() as i32;
-        let ear_r = ((p.right() + ear).min(ui::WIN_W) * s).ceil() as i32;
-        let ear_b = ((ear + 2.0).min(p.bottom()) * s).ceil() as i32;
-
-        let key = (pill_l, pill_r, pill_b, ear_l, ear_r, ear_b);
-        if key != self.region {
-            self.region = key;
-            unsafe {
-                let body_rgn = CreateRectRgn(pill_l, 0, pill_r, pill_b);
-                let ear_rgn = CreateRectRgn(ear_l, 0, ear_r, ear_b);
-                let _ = CombineRgn(Some(body_rgn), Some(body_rgn), Some(ear_rgn), RGN_OR);
-                let _ = DeleteObject(ear_rgn.into());
-                // The system owns `body_rgn` after SetWindowRgn.
-                SetWindowRgn(self.hwnd, Some(body_rgn), false);
+    fn resolve_anchor_monitor(&self) -> (HMONITOR, String, windows::Win32::Foundation::RECT) {
+        let want = self.state.settings.monitor.clone();
+        let mut found: Option<(HMONITOR, String, windows::Win32::Foundation::RECT)> = None;
+        let mut primary: Option<(HMONITOR, String, windows::Win32::Foundation::RECT)> = None;
+        let mut mons = Vec::new();
+        unsafe {
+            let _ = EnumDisplayMonitors(None, None, Some(enum_mon), LPARAM(&mut mons as *mut Vec<HMONITOR> as isize));
+            for mon in mons {
+                if let Some((name, info)) = monitor_ex(mon) {
+                    let work = info.rcWork;
+                    let is_primary = info.dwFlags & WindowsAndMessaging::MONITORINFOF_PRIMARY != 0;
+                    if primary.is_none() || is_primary {
+                        if is_primary || primary.is_none() {
+                            primary = Some((mon, name.clone(), work));
+                        }
+                    }
+                    if want.as_deref() == Some(name.as_str()) {
+                        found = Some((mon, name, work));
+                    }
+                }
             }
         }
+        found.or(primary).unwrap_or_else(|| {
+            let mon = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+            let (name, info) = monitor_ex(mon).unwrap_or_else(|| (String::new(), MONITORINFO::default()));
+            (mon, name, info.rcWork)
+        })
+    }
+
+    /// Project the cursor onto the nearest work-area edge/corner and position the island flush to it.
+    pub(super) fn snap_drag_to_cursor(&mut self, save: bool) {
+        let mut pt = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut pt);
+        }
+        let mon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+        let Some((name, info)) = monitor_ex(mon) else { return };
+        let work = info.rcWork;
+        let corner = (ui::SNAP_CORNER_DIP * self.scale).round() as i32;
+
+        // Pick edge/corner from cursor position, then adapt collapsed size if orientation changed.
+        let cur_pw = (self.w.value * self.scale).ceil() as i32;
+        let cur_ph = (self.h.value * self.scale_y).ceil() as i32;
+        let (dock, _, _) = ui::Dock::snap_perimeter(
+            pt.x,
+            pt.y,
+            cur_pw,
+            cur_ph,
+            (work.left, work.top, work.right, work.bottom),
+            corner,
+        );
+        if dock != self.dock {
+            self.dock = dock;
+            if !self.expanded {
+                let (tw, th) = ui::collapsed_size(self.mode, self.alert_w, dock);
+                self.w.set_target(tw);
+                self.h.set_target(th);
+                if self.state.settings.reduce_motion {
+                    self.w.snap();
+                    self.h.snap();
+                }
+            }
+        }
+
+        let (target_w, target_h) = if self.expanded {
+            (self.w.target, self.h.target)
+        } else {
+            ui::collapsed_size(self.mode, self.alert_w, dock)
+        };
+        let pw = (target_w * self.scale).ceil() as i32;
+        let ph = (target_h * self.scale_y).ceil() as i32;
+        let (dock, left, top) = ui::Dock::snap_perimeter(
+            pt.x,
+            pt.y,
+            pw,
+            ph,
+            (work.left, work.top, work.right, work.bottom),
+            corner,
+        );
+        self.dock = dock;
+        let (wpx, hpx) = self.cap_px();
+        let pill = ui::pill_rect(target_w, target_h, dock);
+        let x = match dock {
+            ui::Dock::Left | ui::Dock::TopLeft | ui::Dock::BottomLeft => work.left,
+            ui::Dock::Right | ui::Dock::TopRight | ui::Dock::BottomRight => work.right - wpx,
+            ui::Dock::Top | ui::Dock::Bottom => left - (pill.x * self.scale).round() as i32,
+        };
+        let y = match dock {
+            ui::Dock::Top | ui::Dock::TopLeft | ui::Dock::TopRight => work.top,
+            ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => work.bottom - hpx,
+            ui::Dock::Left | ui::Dock::Right => top - (pill.y * self.scale_y).round() as i32,
+        };
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        self.origin = (x, y);
+        self.region = (0, 0, 0, 0, 0, 0);
+        self.needs_draw = true;
+
+        if save {
+            let ww = (work.right - work.left).max(1) as f32;
+            let wh = (work.bottom - work.top).max(1) as f32;
+            let ax = match dock {
+                ui::Dock::Left | ui::Dock::TopLeft | ui::Dock::BottomLeft => 0.0,
+                ui::Dock::Right | ui::Dock::TopRight | ui::Dock::BottomRight => 1.0,
+                ui::Dock::Top | ui::Dock::Bottom => ((left + pw / 2 - work.left) as f32 / ww).clamp(0.0, 1.0),
+            };
+            let ay = match dock {
+                ui::Dock::Top | ui::Dock::TopLeft | ui::Dock::TopRight => 0.0,
+                ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => 1.0,
+                ui::Dock::Left | ui::Dock::Right => ((top + ph / 2 - work.top) as f32 / wh).clamp(0.0, 1.0),
+            };
+            self.state.settings.monitor = Some(name);
+            self.state.settings.anchor_x = Some(ax);
+            self.state.settings.anchor_y = Some(ay);
+            self.state.mark_settings_dirty(sys::now_ms());
+        }
+    }
+
+    /// Drop the pill on the nearest perimeter edge/corner and remember the anchor.
+    pub(super) fn commit_drag(&mut self) {
+        self.snap_drag_to_cursor(true);
+    }
+
+    /// Hit region wraps the drawn silhouette with a 2px transparent pad so GDI never clips
+    /// anti-aliased Direct2D edges or flush bezel pixels (WS_EX_NOREDIRECTIONBITMAP keeps pad invisible).
+    fn update_region(&mut self) {
+        let dock = self.visual_dock();
+        let p = ui::pill_rect(self.w.value, self.h.value, dock);
+        let radii = ui::pill_radii(dock, self.e.value, self.w.value, self.h.value);
+        let ear = ui::ear_for(dock);
+        let s = self.scale;
+        let sy = self.scale_y;
+        let (wpx, hpx) = self.cap_px();
+        let pad = 2;
+        let l = ((p.x * s).floor() as i32 - pad).max(0);
+        let t = ((p.y * sy).floor() as i32 - pad).max(0);
+        let r = ((p.right() * s).ceil() as i32 + pad).min(wpx);
+        let b = ((p.bottom() * sy).ceil() as i32 + pad).min(hpx);
+        let rad = (radii.iter().cloned().fold(0.0_f32, f32::max) * s).round().max(1.0) as i32;
+        let dock_code = match dock {
+            ui::Dock::Top => 1,
+            ui::Dock::Bottom => 2,
+            ui::Dock::Left => 3,
+            ui::Dock::Right => 4,
+            ui::Dock::TopLeft => 5,
+            ui::Dock::TopRight => 6,
+            ui::Dock::BottomLeft => 7,
+            ui::Dock::BottomRight => 8,
+        };
+        let key = (l, t, r, b, rad, dock_code);
+        if key == self.region || r <= l || b <= t {
+            return;
+        }
+        self.region = key;
+        unsafe {
+            let body = CreateRoundRectRgn(l, t, r, b, rad * 2, rad * 2);
+            let or_rect = |x0: i32, y0: i32, x1: i32, y1: i32| {
+                if x1 > x0 && y1 > y0 {
+                    let rgn = CreateRectRgn(x0, y0, x1, y1);
+                    let _ = CombineRgn(Some(body), Some(body), Some(rgn), RGN_OR);
+                    let _ = DeleteObject(rgn.into());
+                }
+            };
+            // Square off flush bezel corners so they are never clipped by the round-rect.
+            let rx = rad.min((r - l).max(0));
+            let ry = rad.min((b - t).max(0));
+            if radii[0] < 0.5 {
+                or_rect(l, t, l + rx, t + ry);
+            }
+            if radii[1] < 0.5 {
+                or_rect(r - rx, t, r, t + ry);
+            }
+            if radii[2] < 0.5 {
+                or_rect(r - rx, b - ry, r, b);
+            }
+            if radii[3] < 0.5 {
+                or_rect(l, b - ry, l + rx, b);
+            }
+
+            let ear_x = (ear * s).round() as i32;
+            let ear_y = (ear * sy).round() as i32;
+            if ear_x > 0 && ear_y > 0 {
+                match dock {
+                    ui::Dock::Top => {
+                        or_rect(l - ear_x, t, l + 2, t + ear_y);
+                        or_rect(r - 2, t, r + ear_x, t + ear_y);
+                    }
+                    ui::Dock::Bottom => {
+                        or_rect(l - ear_x, b - ear_y, l + 2, b);
+                        or_rect(r - 2, b - ear_y, r + ear_x, b);
+                    }
+                    ui::Dock::Left => {
+                        or_rect(l, t - ear_y, l + ear_x, t + 2);
+                        or_rect(l, b - 2, l + ear_x, b + ear_y);
+                    }
+                    ui::Dock::Right => {
+                        or_rect(r - ear_x, t - ear_y, r, t + 2);
+                        or_rect(r - ear_x, b - 2, r, b + ear_y);
+                    }
+                    ui::Dock::TopLeft => {
+                        or_rect(r - 2, t, r + ear_x, t + ear_y);
+                        or_rect(l, b - 2, l + ear_x, b + ear_y);
+                    }
+                    ui::Dock::TopRight => {
+                        or_rect(l - ear_x, t, l + 2, t + ear_y);
+                        or_rect(r - ear_x, b - 2, r, b + ear_y);
+                    }
+                    ui::Dock::BottomLeft => {
+                        or_rect(l, t - ear_y, l + ear_x, t + 2);
+                        or_rect(r - 2, b - ear_y, r + ear_x, b);
+                    }
+                    ui::Dock::BottomRight => {
+                        or_rect(l - ear_x, b - ear_y, l + 2, b);
+                        or_rect(r - ear_x, t - ear_y, r, t + 2);
+                    }
+                }
+            }
+            SetWindowRgn(self.hwnd, Some(body), false);
+        }
+    }
+
+    pub(super) fn refresh_alert_width(&mut self) {
+        let (text, extra) = match self.mode {
+            Collapsed::Banner => {
+                let Some(b) = &self.state.banner else {
+                    self.alert_w = ui::REST_W;
+                    return;
+                };
+                let line = if b.icon == BannerIcon::Reminder { b.body.clone() } else { b.title.clone() };
+                let extra = if b.todo_id.is_some() || b.alarm_id.is_some() {
+                    70.0
+                } else if matches!(b.icon, BannerIcon::Charging | BannerIcon::BatteryLow) {
+                    52.0
+                } else {
+                    8.0
+                };
+                (line, extra)
+            }
+            Collapsed::Osd => {
+                let Some(o) = &self.state.osd else {
+                    self.alert_w = ui::REST_W;
+                    return;
+                };
+                let level = if o.muted { 0.0 } else { o.level };
+                (format!("{}", (level * 100.0).round() as i32), 130.0)
+            }
+            _ => {
+                self.alert_w = ui::REST_W;
+                self.alert_key.clear();
+                return;
+            }
+        };
+        let key = format!("{text}|{extra}|{:.3}", self.scale);
+        if key == self.alert_key {
+            return;
+        }
+        self.alert_key = key;
+        let measured = if let Some(g) = self.gfx.as_mut() {
+            g.measure_line(&text, crate::gfx::Font::text(13.0, 600, crate::gfx::Align::Left))
+        } else {
+            text.chars().count() as f32 * 7.2
+        };
+        self.alert_w = ui::alert_width(measured, true, extra);
     }
 
     // ---- state transitions -------------------------------------------------------
@@ -332,10 +665,11 @@ impl App {
             self.tab = visible[0];
         }
 
+        self.refresh_alert_width();
         let (tw, th) = if self.expanded {
             ui::expanded_size(&self.state, self.tab, now)
         } else {
-            ui::collapsed_size(self.mode)
+            ui::collapsed_size(self.mode, self.alert_w, self.dock)
         };
         self.w.set_target(tw);
         self.h.set_target(th);
@@ -353,8 +687,6 @@ impl App {
             self.hub_needs_draw = true;
         }
         self.arm_timer(now);
-        self.sync_audio_timer();
-        self.sync_raw_mouse();
         self.refresh_world_offsets(now);
         self.sync_hub_timer();
     }
@@ -431,8 +763,6 @@ impl App {
             && self.e.is_settled()
             && self.hover_anim.is_settled()
             && self.tab_pos.is_settled()
-            && self.eye_x.is_settled()
-            && self.eye_y.is_settled()
             && self.glow() <= 0.0
     }
 
@@ -452,24 +782,17 @@ impl App {
             let dt = now_i.duration_since(self.last_frame).as_secs_f32();
             self.last_frame = now_i;
             let animating_before = !self.settled();
-            let dt = if (animating_before || self.audio_timer_on) && dt < 0.1 {
-                dt.max(1.0 / 240.0)
-            } else {
-                1.0 / 60.0
-            };
+            let dt = if animating_before && dt < 0.1 { dt.max(1.0 / 240.0) } else { 1.0 / 60.0 };
             self.w.step(dt);
             self.h.step(dt);
             self.e.step(dt);
             self.hover_anim.step(dt);
             self.tab_pos.step(dt);
-            self.eye_x.step(dt);
-            self.eye_y.step(dt);
-            self.step_audio(dt, sys::now_ms());
             let animating = !self.settled();
             if self.glow() <= 0.0 {
                 self.landed_at = None;
             }
-            self.set_eco(!animating && !self.expanded && !self.audio_timer_on && !self.hub_open);
+            self.set_eco(!animating && !self.expanded && !self.hub_open);
             self.update_region();
             self.sync_artwork();
             self.render();
@@ -498,9 +821,11 @@ impl App {
 
     fn render(&mut self) {
         let now = sys::now_ms();
+        let dock = self.visual_dock();
         let view = ui::View {
             now,
-            pill: ui::pill_rect(self.w.value, self.h.value),
+            pill: ui::pill_rect(self.w.value, self.h.value, dock),
+            dock,
             expand: self.e.value.clamp(0.0, 1.0),
             mode: self.mode,
             tab: self.tab,
@@ -510,10 +835,8 @@ impl App {
             hover: self.hover,
             hover_t: self.hover_anim.value.clamp(0.0, 1.0),
             tab_pos: self.tab_pos.value.clamp(0.0, 2.0),
-            eye: (self.eye_x.value, self.eye_y.value),
+            hot: self.mouse_inside,
             glow: self.glow(),
-            audio_bars: self.audio_bars,
-            audio_peak: self.audio_peak,
         };
         let state = &self.state;
         let mut hits = Vec::new();
@@ -522,6 +845,7 @@ impl App {
             None => return,
         };
         self.hits = hits;
+        self.sync_edit_bounds();
         if let Err(e) = result {
             log::warn!("render failed ({e}); recreating device");
             self.gfx = None;
@@ -547,11 +871,37 @@ impl App {
     // ---- window procedures -----------------------------------------------------------
 
     fn mouse_pos(&self, lparam: LPARAM) -> (f32, f32) {
-        let x = (lparam.0 & 0xFFFF) as i16 as f32 / self.scale;
-        let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / self.scale;
-        (x, y)
+        self.dip_from(lparam, self.scale, self.scale_y)
     }
 
+    pub(super) fn dip_from(&self, lparam: LPARAM, sx: f32, sy: f32) -> (f32, f32) {
+        let x = (lparam.0 & 0xFFFF) as i16 as f32 / sx.max(0.5);
+        let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / sy.max(0.5);
+        (x, y)
+    }
+}
+
+unsafe extern "system" fn enum_mon(mon: HMONITOR, _: HDC, _: *mut windows::Win32::Foundation::RECT, data: LPARAM) -> windows_core::BOOL {
+    let list = &mut *(data.0 as *mut Vec<HMONITOR>);
+    list.push(mon);
+    windows_core::BOOL(1)
+}
+
+fn monitor_ex(mon: HMONITOR) -> Option<(String, MONITORINFO)> {
+    unsafe {
+        let mut ex = MONITORINFOEXW::default();
+        ex.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        let ok = GetMonitorInfoW(mon, &mut ex as *mut MONITORINFOEXW as *mut MONITORINFO);
+        if !ok.as_bool() {
+            return None;
+        }
+        let name = {
+            let raw = ex.szDevice;
+            let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+            String::from_utf16_lossy(&raw[..end])
+        };
+        Some((name, ex.monitorInfo))
+    }
 }
 
 fn visible_index(st: &AppState, tab: Tab, now: i64) -> f32 {

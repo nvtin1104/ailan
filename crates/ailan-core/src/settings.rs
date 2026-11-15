@@ -37,18 +37,30 @@ fn de_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
     })
 }
 
-/// User settings. The Dynamic Island has a single fixed behaviour (no modes, priority or
-/// pinning settings); keys from older settings files are ignored on load.
+/// User settings. The island has one fixed behaviour (no modes, priority or pinning).
+/// Keys from older settings files are ignored on load. New fields are optional so a
+/// file written before drag-position and hub size still loads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// `None` until first run, then filled from the system locale.
     pub lang: Option<Lang>,
-    /// Primary/selected activity shown when the notch expands.
+    /// Primary/selected activity shown when the island expands.
     #[serde(deserialize_with = "de_tab")]
     pub tab: Tab,
     /// Disable spring animations (accessibility / very slow machines).
     pub reduce_motion: bool,
+    /// Monitor device name (`szDevice`) the island was dropped on. `None` = primary.
+    pub monitor: Option<String>,
+    /// Pill centre X as a fraction of that monitor's work area. `None` = centred.
+    pub anchor_x: Option<f32>,
+    /// Pill top Y as a fraction of that monitor's work area. `None` = top edge.
+    pub anchor_y: Option<f32>,
+    /// Hub client size in DIP. `None` = 1000×680.
+    pub hub_w: Option<f32>,
+    pub hub_h: Option<f32>,
+    /// Hub page restored on the next open.
+    pub hub_page: HubPage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -64,7 +76,17 @@ pub enum HubPage {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, tab: Tab::Music, reduce_motion: false }
+        Self {
+            lang: None,
+            tab: Tab::Music,
+            reduce_motion: false,
+            monitor: None,
+            anchor_x: None,
+            anchor_y: None,
+            hub_w: None,
+            hub_h: None,
+            hub_page: HubPage::Today,
+        }
     }
 }
 

@@ -3,7 +3,8 @@
 use ailan_core::settings::HubPage;
 use ailan_core::todo::{parse_input, MAX_TEXT};
 use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::{FillRect, GetMonitorInfoW, GetStockObject, MonitorFromPoint, RedrawWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW};
+use windows::Win32::Graphics::Gdi::{FillRect, GetMonitorInfoW, GetStockObject, MonitorFromPoint, MonitorFromWindow, RedrawWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_CONTROL};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -25,9 +26,13 @@ impl App {
             self.hub_ctrl.select_page(p);
         }
         self.hub_open = true;
+        let hs = self.hub_scale();
+        let (work_w, work_h) = self.hub_work_dip(hs);
+        let (cw, ch) = crate::hub::controller::HubController::clamp_dip(self.hub_ctrl.width, self.hub_ctrl.height, work_w, work_h);
+        self.hub_ctrl.apply_size(cw, ch);
         let (dip_w, dip_h) = self.hub_ctrl.target_size();
-        let wpx = (dip_w as f32 * self.scale).ceil() as i32;
-        let hpx = (dip_h as f32 * self.scale).ceil() as i32;
+        let wpx = (dip_w as f32 * hs).ceil() as i32;
+        let hpx = (dip_h as f32 * hs).ceil() as i32;
 
         unsafe {
             let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
@@ -43,10 +48,10 @@ impl App {
 
             match self.hub_gfx.as_mut() {
                 Some(g) => {
-                    let _ = g.resize(wpx as u32, hpx as u32, self.scale);
+                    let _ = g.resize(wpx as u32, hpx as u32, hs);
                 }
                 None => {
-                    self.hub_gfx = Gfx::new(self.hub_hwnd, wpx as u32, hpx as u32, self.scale).ok();
+                    self.hub_gfx = Gfx::new(self.hub_hwnd, wpx as u32, hpx as u32, hs).ok();
                 }
             }
             let _ = ShowWindow(self.hub_hwnd, SW_SHOW);
@@ -56,9 +61,32 @@ impl App {
         self.hub_needs_draw = true;
     }
 
+    fn hub_scale(&self) -> f32 {
+        let dpi = unsafe { GetDpiForWindow(self.hub_hwnd) };
+        if dpi == 0 { self.scale } else { dpi as f32 / 96.0 }
+    }
+
+    fn hub_work_dip(&self, scale: f32) -> (f32, f32) {
+        unsafe {
+            let mon = MonitorFromWindow(self.hub_hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let _ = GetMonitorInfoW(mon, &mut mi);
+            let s = scale.max(0.5);
+            ((mi.rcWork.right - mi.rcWork.left) as f32 / s, (mi.rcWork.bottom - mi.rcWork.top) as f32 / s)
+        }
+    }
+
+    fn persist_hub_geometry(&mut self) {
+        self.state.settings.hub_w = Some(self.hub_ctrl.width);
+        self.state.settings.hub_h = Some(self.hub_ctrl.height);
+        self.state.settings.hub_page = self.hub_ctrl.active_page;
+        self.state.mark_settings_dirty(sys::now_ms());
+    }
+
     pub fn resize_hub(&mut self, dip_w: i32, dip_h: i32) {
-        let wpx = (dip_w as f32 * self.scale).ceil() as i32;
-        let hpx = (dip_h as f32 * self.scale).ceil() as i32;
+        let hs = self.hub_scale();
+        let wpx = (dip_w as f32 * hs).ceil() as i32;
+        let hpx = (dip_h as f32 * hs).ceil() as i32;
         unsafe {
             let mut rc = windows::Win32::Foundation::RECT::default();
             let _ = GetWindowRect(self.hub_hwnd, &mut rc);
@@ -71,7 +99,7 @@ impl App {
             // acrylic backdrop shows through the whole window after growing.
             let _ = RedrawWindow(Some(self.hub_hwnd), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
             if let Some(g) = self.hub_gfx.as_mut() {
-                let _ = g.resize(wpx as u32, hpx as u32, self.scale);
+                let _ = g.resize(wpx as u32, hpx as u32, hs);
             }
         }
         self.hub_needs_draw = true;
@@ -137,10 +165,12 @@ impl App {
             HubAction::ToggleMode => {
                 let (w, h) = self.hub_ctrl.toggle_mode();
                 self.resize_hub(w, h);
+                self.persist_hub_geometry();
                 return;
             }
             HubAction::SelectPage(page) => {
                 self.hub_ctrl.select_page(page);
+                self.persist_hub_geometry();
                 self.sync_hub_timer();
                 self.hub_needs_draw = true;
                 return;
@@ -375,6 +405,7 @@ impl App {
             return;
         }
         let (dip_w, dip_h) = self.hub_ctrl.target_size();
+        let hs = self.hub_scale();
         let now = sys::now_ms();
         let state = &self.state;
         let ctrl = &mut self.hub_ctrl;
@@ -384,9 +415,9 @@ impl App {
         };
         if let Err(e) = result {
             log::warn!("hub render failed ({e}); recreating device");
-            let wpx = (dip_w as f32 * self.scale).ceil() as u32;
-            let hpx = (dip_h as f32 * self.scale).ceil() as u32;
-            self.hub_gfx = Gfx::new(self.hub_hwnd, wpx, hpx, self.scale).ok();
+            let wpx = (dip_w as f32 * hs).ceil() as u32;
+            let hpx = (dip_h as f32 * hs).ceil() as u32;
+            self.hub_gfx = Gfx::new(self.hub_hwnd, wpx, hpx, hs).ok();
             self.hub_needs_draw = true;
         }
     }
@@ -401,7 +432,7 @@ impl App {
 
     pub fn handle_hub(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let hwnd = self.hub_hwnd;
-        let (dip_w, dip_h) = self.hub_ctrl.target_size();
+        let hs = self.hub_scale();
 
         match msg {
             WM_NCACTIVATE => {
@@ -412,19 +443,6 @@ impl App {
                 return Some(unsafe { DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)) });
             }
             WM_NCPAINT => {
-                return Some(LRESULT(0));
-            }
-            WM_WINDOWPOSCHANGING => {
-                // Lock the window to the current layout size (blocks edge drags, Snap, maximize).
-                let wp = lparam.0 as *mut WINDOWPOS;
-                if !wp.is_null() {
-                    unsafe {
-                        if (*wp).flags.0 & SWP_NOSIZE.0 == 0 {
-                            (*wp).cx = (dip_w as f32 * self.scale).ceil() as i32;
-                            (*wp).cy = (dip_h as f32 * self.scale).ceil() as i32;
-                        }
-                    }
-                }
                 return Some(LRESULT(0));
             }
             WM_TIMER if wparam.0 == T_HUB => {
@@ -450,22 +468,75 @@ impl App {
                 // the entire window frame without Windows default non-client borders.
                 return Some(LRESULT(0));
             }
+            WM_SIZING => {
+                let rect = lparam.0 as *mut windows::Win32::Foundation::RECT;
+                if !rect.is_null() {
+                    unsafe {
+                        let (work_w, work_h) = self.hub_work_dip(hs);
+                        let w = ((*rect).right - (*rect).left) as f32 / hs;
+                        let h = ((*rect).bottom - (*rect).top) as f32 / hs;
+                        let (cw, ch) = crate::hub::controller::HubController::clamp_dip(w, h, work_w, work_h);
+                        let wpx = (cw * hs).round() as i32;
+                        let hpx = (ch * hs).round() as i32;
+                        let edge = wparam.0 as u32;
+                        if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
+                            (*rect).left = (*rect).right - wpx;
+                        } else {
+                            (*rect).right = (*rect).left + wpx;
+                        }
+                        if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
+                            (*rect).top = (*rect).bottom - hpx;
+                        } else {
+                            (*rect).bottom = (*rect).top + hpx;
+                        }
+                    }
+                }
+                return Some(LRESULT(1));
+            }
+            WM_SIZE => {
+                if wparam.0 != SIZE_MINIMIZED as usize {
+                    let w = (lparam.0 & 0xFFFF) as u32 as f32 / hs;
+                    let h = ((lparam.0 >> 16) & 0xFFFF) as u32 as f32 / hs;
+                    if w > 8.0 && h > 8.0 {
+                        self.hub_ctrl.apply_size(w, h);
+                        let px_w = (lparam.0 & 0xFFFF) as u32;
+                        let px_h = ((lparam.0 >> 16) & 0xFFFF) as u32;
+                        if let Some(g) = self.hub_gfx.as_mut() {
+                            let _ = g.resize(px_w, px_h, hs);
+                        }
+                        self.hub_needs_draw = true;
+                    }
+                }
+            }
+            WM_EXITSIZEMOVE => self.persist_hub_geometry(),
             WM_NCHITTEST => {
                 let mut pt = POINT::default();
                 unsafe {
                     let _ = GetCursorPos(&mut pt);
                     let _ = ScreenToClient(hwnd, &mut pt);
                 }
-                let x = pt.x as f32 / self.scale;
-                let y = pt.y as f32 / self.scale;
-
-                // No resize borders: the hub has two fixed layouts (Compact / Full) and its
-                // swapchain is sized to them; free resizing would expose uncovered bands.
-                // Drag on the titlebar band wherever there is no interactive element.
-                if self.hub_ctrl.is_caption(x, y) {
-                    return Some(LRESULT(HTCAPTION as isize));
-                }
-                return Some(LRESULT(HTCLIENT as isize));
+                let x = pt.x as f32 / hs;
+                let y = pt.y as f32 / hs;
+                let b = 6.0;
+                let w = self.hub_ctrl.width;
+                let h = self.hub_ctrl.height;
+                let left = x < b;
+                let right = x > w - b;
+                let top = y < b;
+                let bottom = y > h - b;
+                let hit = match (left, right, top, bottom) {
+                    (true, _, true, _) => HTTOPLEFT,
+                    (_, true, true, _) => HTTOPRIGHT,
+                    (true, _, _, true) => HTBOTTOMLEFT,
+                    (_, true, _, true) => HTBOTTOMRIGHT,
+                    (true, _, _, _) => HTLEFT,
+                    (_, true, _, _) => HTRIGHT,
+                    (_, _, true, _) => HTTOP,
+                    (_, _, _, true) => HTBOTTOM,
+                    _ if self.hub_ctrl.is_caption(x, y) => HTCAPTION,
+                    _ => HTCLIENT,
+                };
+                return Some(LRESULT(hit as isize));
             }
             WM_SETCURSOR => {
                 let hit_test = (lparam.0 & 0xFFFF) as u32;
@@ -475,7 +546,7 @@ impl App {
                 }
             }
             WM_MOUSEMOVE => {
-                let pos = self.mouse_pos(lparam);
+                let pos = self.dip_from(lparam, hs, hs);
                 if self.hub_cursor != Some(pos) {
                     self.hub_cursor = Some(pos);
                 }
@@ -504,7 +575,7 @@ impl App {
                 apply_cursor_icon(ui::CursorIcon::Default);
             }
             WM_LBUTTONDOWN => {
-                let (x, y) = self.mouse_pos(lparam);
+                let (x, y) = self.dip_from(lparam, hs, hs);
                 let had_focus = self.hub_ctrl.focus.is_some();
                 match self.hub_ctrl.on_mouse_down(x, y) {
                     Some(act) => self.on_hub_action(act),

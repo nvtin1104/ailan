@@ -202,7 +202,7 @@ fn create_window() -> Result<HWND> {
         };
         RegisterClassExW(&wc);
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
             class,
             w!("Ailan"),
             WS_POPUP,

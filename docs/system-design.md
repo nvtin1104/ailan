@@ -74,36 +74,41 @@ Mục tiêu thiết kế: **native thuần Rust**, **không polling**, **0% CPU 
 
 ## 4. Cửa sổ notch
 
-* `WS_POPUP` + `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP`.
-* Kích thước cửa sổ = kích thước mở rộng tối đa; nội dung vẽ trên swapchain trong suốt.
-* **Vùng nhận chuột** = `SetWindowRgn` theo khung pill hiện tại → phần trong suốt không chặn click của app phía dưới.
-* Hover vào pill ≥ 160 ms (hover-intent, tránh mở nhầm khi rê chuột qua thanh tab trình duyệt) → mở rộng (spring); `WM_MOUSELEAVE` → thu gọn sau 380 ms.
-* Click icon tray → mở notch 4 s; chuột phải → menu (Khởi động cùng Windows, Ngôn ngữ, Giới thiệu, Thoát).
-* Ô nhập to-do: khi bấm vào, tạm bỏ `WS_EX_NOACTIVATE` và lấy focus để nhận `WM_CHAR`; mất focus/thu gọn → trả lại.
-* `WM_DPICHANGED` / `WM_DISPLAYCHANGE` → đặt lại vị trí & kích thước swapchain.
+* `WS_POPUP` + `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`. `WM_MOUSEACTIVATE` trả `MA_NOACTIVATE` (trừ lúc bấm ô chữ).
+* HWND = cap **560×128 DIP**. Pill vẽ bên trong và đổi kích thước bằng spring + `SetWindowRgn`. Không `SetWindowPos` mỗi frame. Không low-level mouse hook.
+* **Vùng nhận chuột** = `SetWindowRgn` bo tròn, thụt 1 px. Ngoài region, click xuống app phía dưới.
+* Click chrome mới mở hoặc đóng. Rê chuột chỉ đổi màu hairline. Rời chuột không thu pill.
+* Kéo sau `SM_CXDRAG` / `SM_CYDRAG`. Thả chuột: kẹp pill trong `rcWork`, dính mép trên nếu cách ≤ 24 DIP, lưu tên monitor + phân số work area.
+* Mặc định: giữa mép trên `rcWork` của màn hình chính. Monitor đã lưu bị rút → về primary, top-center.
+* Tray trái: bật/tắt hub. Chuột phải trên tray: menu. Island không mở menu.
+* Ô to-do: `EDIT` con. Cùng click đó bỏ `WS_EX_NOACTIVATE`, `SetForegroundWindow`, rồi trả lại khi blur.
+* `WM_DPICHANGED` / `WM_DISPLAYCHANGE`: nếu đang kéo thì chỉ đổi scale; không thì `place()` lại từ anchor.
 
 ### Trạng thái hiển thị (thu gọn), theo ưu tiên
 
-Island không còn cài đặt (chế độ, ưu tiên, ghim…): thứ tự cố định.
+1. OSD (âm lượng / độ sáng) — 1.5 s, cao 34, rộng đo chữ, kẹp 150–420
+2. Banner (nhắc việc, sạc, tai nghe, báo thức, hết hẹn giờ) — một dòng, cùng khoảng rộng
+3. Đồng hồ đếm ngược đang bật
+4. Bấm giờ đang bật
+5. Nhạc đang phát
+6. Việc hôm nay chưa xong — tiến độ `xong/tổng`
+7. Không có gì → capsule 150×32, nhãn "Ailan". Không mắt, không raw mouse.
 
-1. OSD (âm lượng / độ sáng) — 1.5 s, pill 240×34
-2. Banner (nhắc việc, sạc pin, tai nghe, hết phiên Pomodoro) — pill 1 dòng 250×34
-3. Focus đang bật (chạy hoặc tạm dừng) — luôn ưu tiên hơn nhạc
-4. Nhạc đang phát — biểu tượng sóng nhạc
-5. Việc hôm nay chưa xong — tiến độ `xong/tổng`
-6. Không có gì → đôi mắt; mắt nhìn theo con trỏ trên toàn màn hình (Raw Input, chỉ đăng ký khi đang ở trạng thái này)
-
-Bật Focus / thêm việc từ Hub: một icon bay từ nút trong Hub lên Island (cửa sổ overlay trong suốt ~0.5 s, tạo và huỷ theo từng lần bay); Island giữ trạng thái cũ đến khi icon "hạ cánh" rồi mới đổi.
+Thêm việc từ Hub: một icon bay từ nút trong Hub tới tâm pill.
 
 ### Trạng thái mở rộng
 
-Hàng đầu: giờ/ngày + trạng thái (Wi-Fi, tai nghe, âm lượng, pin). Thanh tab: **Nhạc · Tập trung · Việc cần làm**. Vùng nội dung theo tab.
+Một cỡ **380×128** cho mọi trang. Trang: **Nhạc · Việc cần làm**. Không tab Tập trung.
+
+### Hub
+
+Cửa sổ app kéo viền được. Min 380×520 DIP, max min(1280×900, 90% work area). Dưới 640 DIP là dock; từ 640 là sidebar. Cỡ và trang được lưu.
 
 ## 5. Lưu trữ
 
 | File | Nội dung |
 |---|---|
-| `%APPDATA%\Ailan\settings.toml` | ngôn ngữ, thời lượng Pomodoro, tab mặc định, giảm chuyển động |
+| `%APPDATA%\Ailan\settings.toml` | ngôn ngữ, tab, giảm chuyển động, neo island (monitor + phân số), cỡ hub, trang hub |
 | `%APPDATA%\Ailan\data.json` | to-do, số phiên tập trung trong ngày |
 | `%LOCALAPPDATA%\Ailan\logs\ailan.log` | log xoay vòng (cắt khi > 512 KB) |
 

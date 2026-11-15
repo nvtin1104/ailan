@@ -31,6 +31,8 @@ pub const WM_APP_AUDIO_DEVICE: u32 = WM_APP + 3;
 pub const WM_APP_APPBAR: u32 = WM_APP + 4;
 /// Show / bring to front AiLan Personal Hub window (e.g. from single-instance launch).
 pub const WM_APP_SHOW_HUB: u32 = WM_APP + 5;
+/// Child to-do `EDIT`: wparam 1 = Enter, 2 = Escape, 3 = focus left the field.
+pub const WM_APP_EDIT: u32 = WM_APP + 6;
 
 /// Thread-safe handle providers use to deliver events to the UI thread.
 #[derive(Clone)]

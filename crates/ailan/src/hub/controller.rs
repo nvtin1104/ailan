@@ -22,6 +22,11 @@ pub const COMPACT_WIDTH: i32 = 380;
 pub const COMPACT_HEIGHT: i32 = 600;
 pub const FULL_WIDTH: i32 = 1000;
 pub const FULL_HEIGHT: i32 = 680;
+pub const HUB_MIN_W: f32 = 380.0;
+pub const HUB_MIN_H: f32 = 520.0;
+pub const HUB_MAX_W: f32 = 1280.0;
+pub const HUB_MAX_H: f32 = 900.0;
+pub const HUB_DOCK_BREAK: f32 = 640.0;
 
 pub const TITLE_H: f32 = 44.0;
 pub const SIDEBAR_W: f32 = 220.0;
@@ -51,6 +56,8 @@ pub enum KeyOutcome {
 
 pub struct HubController {
     pub active_page: HubPage,
+    pub width: f32,
+    pub height: f32,
     pub is_compact: bool,
     pub hover: Option<HubAction>,
     pub mouse: Option<(f32, f32)>,
@@ -93,6 +100,8 @@ impl HubController {
     pub fn new() -> Self {
         Self {
             active_page: HubPage::Today,
+            width: FULL_WIDTH as f32,
+            height: FULL_HEIGHT as f32,
             is_compact: false,
             hover: None,
             mouse: None,
@@ -121,16 +130,29 @@ impl HubController {
         }
     }
 
-    pub fn target_size(&self) -> (i32, i32) {
-        if self.is_compact {
-            (COMPACT_WIDTH, COMPACT_HEIGHT)
-        } else {
-            (FULL_WIDTH, FULL_HEIGHT)
-        }
+    pub fn clamp_dip(w: f32, h: f32, work_w: f32, work_h: f32) -> (f32, f32) {
+        let max_w = HUB_MAX_W.min(work_w * 0.9).max(HUB_MIN_W);
+        let max_h = HUB_MAX_H.min(work_h * 0.9).max(HUB_MIN_H);
+        (w.clamp(HUB_MIN_W, max_w), h.clamp(HUB_MIN_H, max_h))
     }
 
+    pub fn apply_size(&mut self, w: f32, h: f32) {
+        self.width = w;
+        self.height = h;
+        self.is_compact = w < HUB_DOCK_BREAK;
+    }
+
+    pub fn target_size(&self) -> (i32, i32) {
+        (self.width.round() as i32, self.height.round() as i32)
+    }
+
+    /// Snap between the two remembered layouts. The user can still drag the frame afterwards.
     pub fn toggle_mode(&mut self) -> (i32, i32) {
-        self.is_compact = !self.is_compact;
+        if self.is_compact {
+            self.apply_size(FULL_WIDTH as f32, FULL_HEIGHT as f32);
+        } else {
+            self.apply_size(COMPACT_WIDTH as f32, COMPACT_HEIGHT as f32);
+        }
         self.restart_fade();
         self.scroll_to(0.0, true);
         self.target_size()

@@ -14,30 +14,30 @@ use crate::gfx::{Align, Canvas, Font, Gradient, Rect, RichSpan, TextStyle};
 use crate::ui::{G_CHECKMARK, G_DELETE};
 
 // ---- Background layers ---------------------------------------------------------------
-pub const BG_DEEP_CANVAS: u32 = 0x090A0F;
-pub const BG_DEEP_CANVAS_ALPHA: f32 = 0.85;
-pub const BG_SIDEBAR: u32 = 0x0C0E14;
-pub const BG_SIDEBAR_ALPHA: f32 = 0.60;
-pub const BG_SURFACE_TOP: u32 = 0x141720;
-pub const BG_SURFACE_BOTTOM: u32 = 0x0F1219;
-pub const BG_SURFACE_ELEVATED: u32 = 0x1B1F2C;
-pub const BG_INPUT: u32 = 0x0B0D13;
-pub const BG_BADGE: u32 = 0x1E293B;
+pub const BG_DEEP_CANVAS: u32 = 0x141414;
+pub const BG_DEEP_CANVAS_ALPHA: f32 = 0.92;
+pub const BG_SIDEBAR: u32 = 0x141414;
+pub const BG_SIDEBAR_ALPHA: f32 = 0.72;
+pub const BG_SURFACE_TOP: u32 = 0x212121;
+pub const BG_SURFACE_BOTTOM: u32 = 0x212121;
+pub const BG_SURFACE_ELEVATED: u32 = 0x2A2A2A;
+pub const BG_INPUT: u32 = 0x141414;
+pub const BG_BADGE: u32 = 0x2A2A2A;
 
 // ---- Accent & semantic colours -------------------------------------------------------
-pub const ACCENT_PRIMARY: u32 = 0x6366F1;
-pub const ACCENT_PRIMARY_HI: u32 = 0x818CF8;
+pub const ACCENT_PRIMARY: u32 = 0xF2F2F2;
+pub const ACCENT_PRIMARY_HI: u32 = 0xFFFFFF;
 pub const ACCENT_MINT: u32 = 0x10B981;
 pub const ACCENT_AMBER: u32 = 0xF59E0B;
 pub const ACCENT_ROSE: u32 = 0xF43F5E;
 pub const ACCENT_SKY: u32 = 0x38BDF8;
 
 // ---- Typography colours --------------------------------------------------------------
-pub const TEXT_HERO: u32 = 0xF8FAFC;
-pub const TEXT_TITLE: u32 = 0xE2E8F0;
-pub const TEXT_BODY: u32 = 0x94A3B8;
-pub const TEXT_SECTION: u32 = 0x64748B;
-pub const TEXT_DONE: u32 = 0x475569;
+pub const TEXT_HERO: u32 = 0xFCFCFC;
+pub const TEXT_TITLE: u32 = 0xFCFCFC;
+pub const TEXT_BODY: u32 = 0x9E9E9E;
+pub const TEXT_SECTION: u32 = 0x9E9E9E;
+pub const TEXT_DONE: u32 = 0x6B6B6B;
 pub const WHITE: u32 = 0xFFFFFF;
 
 // ---- Legacy aliases (older pages keep compiling and pick up the new palette) ---------
@@ -46,7 +46,7 @@ pub const GLASS_SIDEBAR: u32 = BG_SIDEBAR;
 pub const GLASS_CARD: u32 = BG_SURFACE_TOP;
 pub const GLASS_CARD_HOVER: u32 = BG_SURFACE_ELEVATED;
 pub const GLASS_INPUT: u32 = BG_INPUT;
-pub const GLASS_BORDER: u32 = 0x2A2F3D;
+pub const GLASS_BORDER: u32 = 0x2A2A2A;
 pub const GLASS_SPECULAR: u32 = WHITE;
 pub const TEXT_PRIMARY: u32 = TEXT_HERO;
 pub const TEXT_MUTED: u32 = TEXT_BODY;
@@ -337,7 +337,7 @@ pub fn draw_round_button(cv: &mut Canvas, cx: f32, cy: f32, radius: f32, glyph: 
         cv.fill_circle_radial(cx, cy, radius * 1.9, GLOW_ACCENT, 0.35 + 0.35 * hover);
         cv.fill_round_linear(r, radius, ACCENT_FILL, (r.x, r.y), (r.right(), r.bottom()), 1.0);
         cv.hairline_round_linear(r, radius, RIM_HOT, (r.x, r.y), (r.x, r.bottom()), 1.0);
-        cv.glyph(glyph, radius * 0.72, r, WHITE, 1.0);
+        cv.glyph(glyph, radius * 0.72, r, BG_DEEP_CANVAS, 1.0);
     } else {
         cv.fill_round(r, radius, WHITE, 0.06 + 0.08 * hover);
         cv.hairline_round_linear(r, radius, RIM, (r.x, r.y), (r.x, r.bottom()), 1.0);

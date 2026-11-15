@@ -34,14 +34,14 @@ Phụ thuộc tối thiểu: `windows`, `serde`, `serde_json`, `toml`, `log`. Fe
 ### Render
 * Tạo `IDWriteTextFormat` và `ID2D1SolidColorBrush` **một lần**, dùng lại mọi frame (đổi màu brush bằng `SetColor`, không tạo mới).
 * Artwork được WIC giải mã + thu nhỏ **một lần trên worker** về 96×96 BGRA premultiplied, tạo `ID2D1Bitmap` một lần mỗi bài.
-* Swapchain 2 buffer, `FLIP_SEQUENTIAL`, kích thước = notch mở rộng (≈ 440×190 DIP), không phải toàn màn hình.
+* Swapchain 2 buffer, `FLIP_SEQUENTIAL`, kích thước = cap island **560×128 DIP**, không phải toàn màn hình. Spring chỉ đổi region, không `ResizeBuffers` mỗi frame.
 * Icon dùng glyph font hệ thống `Segoe MDL2 Assets` → không cần ảnh, không tốn RAM.
 
 ### Khi rảnh
-* 0 frame khi spring đã dừng; đồng hồ thu gọn chỉ hiện giờ:phút → thức 1 lần/phút.
-* Tiến độ bài hát nội suy cục bộ từ timeline snapshot, chỉ tick 1 s khi notch **đang mở rộng** ở tab Nhạc.
-* Pomodoro thu gọn hiển thị theo phút; tick từng giây chỉ khi tab Tập trung đang mở.
-* **EcoQoS** (`SetProcessInformation(ProcessPowerThrottling)`) bật khi thu gọn, tắt khi mở rộng/animation.
+* 0 frame khi spring đã dừng. Idle thu gọn không đăng ký raw mouse và không có timer audio.
+* Tiến độ bài hát nội suy cục bộ từ timeline snapshot, chỉ tick 1 s khi island **đang mở** ở trang Nhạc.
+* Đồng hồ đếm ngược / bấm giờ tick từng giây chỉ khi chúng là trạng thái thu gọn đang hiện.
+* **EcoQoS** (`SetProcessInformation(ProcessPowerThrottling)`) bật khi thu gọn, tắt khi mở hoặc đang animation.
 
 ### Bộ nhớ
 * Ẩn (fullscreen) → `IDXGIDevice3::Trim()` + bỏ artwork.

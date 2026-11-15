@@ -179,7 +179,6 @@ impl AppState {
     }
 
     /// Whether an activity is live on the collapsed island right now.
-    /// - Focus: a session is on (running or paused).
     /// - Music: media is playing.
     /// - To-do: unfinished tasks remain for today.
     pub fn is_activity_running(&self, tab: Tab, now: i64) -> bool {
@@ -327,7 +326,7 @@ impl AppState {
         out
     }
 
-    /// Activity the collapsed island shows: the highest-priority live one (Focus wins).
+    /// Activity the collapsed island shows: music while it is playing, otherwise today's to-dos.
     pub fn primary_activity(&self, now: i64) -> Option<Tab> {
         self.running_activities(now).first().copied()
     }

@@ -4,84 +4,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ailan_core::i18n::{t, Key, Lang};
-use ailan_core::state::{Banner, BannerIcon, Collapsed};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect, KillTimer, SetTimer};
+use ailan_core::state::{Banner, BannerIcon};
+use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, GetWindowRect};
 
 use crate::platform::tray::{MenuCmd, MenuItem};
 use crate::platform::{autostart, sys};
 use crate::ui;
 
-use super::{App, AUDIO_FRAME_MS, T_AUDIO};
+use super::App;
 
 impl App {
-    pub(super) fn sync_audio_timer(&mut self) {
-        let media_playing = self.state.media.as_ref().is_some_and(|m| m.playing);
-        let want_audio_timer = !self.hidden
-            && !self.state.settings.reduce_motion
-            && (media_playing || self.expanded || self.mode == Collapsed::Media);
-        if want_audio_timer != self.audio_timer_on {
-            self.audio_timer_on = want_audio_timer;
-            unsafe {
-                if want_audio_timer {
-                    SetTimer(Some(self.hwnd), T_AUDIO, AUDIO_FRAME_MS, None);
-                } else {
-                    let _ = KillTimer(Some(self.hwnd), T_AUDIO);
-                }
-            }
-        }
-    }
-
-    pub(super) fn step_audio(&mut self, dt: f32, now: i64) {
-        let (raw_peak, [raw_l, raw_r]) = self
-            .audio
-            .as_ref()
-            .map(|a| a.sample_peaks())
-            .unwrap_or((0.0, [0.0, 0.0]));
-
-        let smtc_playing = self.state.media.as_ref().is_some_and(|m| m.playing);
-        let active_sound = smtc_playing || raw_peak > 0.012;
-        const GAIN: f32 = 1.35;
-        let gain = GAIN;
-
-        let peak = (raw_peak * gain).clamp(0.0, 1.0);
-        let left = (raw_l * gain).clamp(0.0, 1.0);
-        let right = (raw_r * gain).clamp(0.0, 1.0);
-
-        let targets: [f32; 5] = if !active_sound {
-            [0.20; 5]
-        } else {
-            let t = (now % 60_000) as f32 * 0.001;
-            let floor = if peak < 0.04 { 0.32 } else { 0.14 };
-            let e_l = left.max(peak * 0.85);
-            let e_r = right.max(peak * 0.85);
-            let e_m = peak.max((left + right) * 0.5);
-            [
-                (floor + (e_l * (0.72 + 0.28 * (t * 9.5).sin().abs())) + (1.0 - e_l) * floor * (t * 5.2).sin().abs()).clamp(0.18, 1.0),
-                (floor + (e_l * 0.6 + e_m * 0.4) * (0.68 + 0.32 * (t * 12.3 + 1.1).sin().abs())).clamp(0.20, 1.0),
-                (floor + e_m * (0.78 + 0.22 * (t * 14.8 + 2.2).sin().abs()) + (1.0 - e_m) * floor * (t * 6.8 + 1.5).sin().abs()).clamp(0.24, 1.0),
-                (floor + (e_r * 0.6 + e_m * 0.4) * (0.68 + 0.32 * (t * 11.7 + 3.4).sin().abs())).clamp(0.20, 1.0),
-                (floor + (e_r * (0.72 + 0.28 * (t * 8.9 + 4.5).sin().abs())) + (1.0 - e_r) * floor * (t * 5.7 + 2.8).sin().abs()).clamp(0.18, 1.0),
-            ]
-        };
-
-        let target_peak = if active_sound { peak } else { 0.0 };
-        let k_peak = if target_peak > self.audio_peak {
-            (dt * 28.0).min(1.0)
-        } else {
-            (dt * 11.0).min(1.0)
-        };
-        self.audio_peak += (target_peak - self.audio_peak) * k_peak;
-
-        for (cur, tgt) in self.audio_bars.iter_mut().zip(targets.iter()) {
-            let k = if *tgt > *cur {
-                (dt * 26.0).min(1.0)
-            } else {
-                (dt * 13.0).min(1.0)
-            };
-            *cur += (*tgt - *cur) * k;
-        }
-    }
-
     pub(super) fn tray_menu(&mut self) {
         let lang = self.state.lang();
         let items = [
@@ -107,9 +39,9 @@ impl App {
             }
             Some(MenuCmd::About) => {
                 self.state.banner = Some(Banner {
-                    icon: BannerIcon::Focus,
+                    icon: BannerIcon::Reminder,
                     title: format!("Ailan {}", env!("CARGO_PKG_VERSION")),
-                    body: "A living monochrome notch for Windows · native Rust".into(),
+                    body: "A quiet island for Windows".into(),
                     until: now + 5_000,
                     todo_id: None,
                     alarm_id: None,
@@ -145,10 +77,10 @@ impl App {
             return;
         }
         let start = (rc.left as f32 + px * self.scale, rc.top as f32 + py * self.scale);
-        let p = ui::pill_rect(self.w.value, self.h.value);
+        let p = ui::pill_rect(self.w.value, self.h.value, self.visual_dock());
         let end = (
             self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale,
-            self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale,
+            self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale_y,
         );
         let scale = self.scale;
         if let Some(f) = self.flight.as_mut() {

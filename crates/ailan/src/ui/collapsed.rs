@@ -1,4 +1,4 @@
-//! Collapsed notch pill rendering (minimal eyes, media, focus timer, todo, OSD, banners).
+//! Collapsed island: quiet capsule, media, clock tools, to-do progress, OSD and banners.
 
 use ailan_core::clock::{fmt_hms, fmt_stopwatch};
 use ailan_core::state::{BannerIcon, Collapsed, OsdKind};
@@ -6,7 +6,7 @@ use ailan_core::time::civil;
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect};
-use super::{draw_status_ring, draw_wave_bars, hover_amt, Action, Hit, View, BG, G_BELL, G_BOLT, G_BRIGHT, G_CHECKMARK, G_HEADPHONE, G_MOON, G_MUTE, G_TIMER, G_VOLUME, WHITE};
+use super::{hover_amt, Action, Hit, View, BG, G_BELL, G_BOLT, G_BRIGHT, G_CHECKMARK, G_HEADPHONE, G_MOON, G_MUSIC, G_MUTE, G_TIMER, G_VOLUME, SURFACE, WHITE};
 
 pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>) {
     let p = v.pill;
@@ -14,31 +14,19 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
     let c = civil(v.now, st.offset_min);
     let playing = st.media.as_ref().is_some_and(|m| m.playing);
 
+    if v.dock.is_vertical() && !matches!(v.mode, Collapsed::Osd | Collapsed::Banner) {
+        draw_collapsed_vertical(cv, st, v, p, &c, playing);
+        return;
+    }
+
     match v.mode {
         Collapsed::Minimal => {
-            // Idle: just the eyes. They blink every ~4s and look toward the pointer.
-            let phase_ms = v.now.rem_euclid(4_200);
-            let blink = if (3_900..4_080).contains(&phase_ms) {
-                let t = (phase_ms - 3_900) as f32 / 90.0;
-                (1.0 - t).abs().clamp(0.12, 1.0)
-            } else {
-                1.0
-            };
-            let eye_w = 8.2;
-            let eye_h = 12.2 * blink;
-            let gap = 14.5;
-            let cx = p.x + p.w * 0.5 + v.eye.0;
-            let ecy = cy + v.eye.1;
-            let left_eye = Rect::new(cx - gap * 0.5 - eye_w, ecy - eye_h * 0.5, eye_w, eye_h);
-            let right_eye = Rect::new(cx + gap * 0.5, ecy - eye_h * 0.5, eye_w, eye_h);
-            cv.fill_round(left_eye, (eye_w * 0.5).min(eye_h * 0.5), WHITE, 0.96);
-            cv.fill_round(right_eye, (eye_w * 0.5).min(eye_h * 0.5), WHITE, 0.96);
+            cv.text("Ailan", Font::text(13.0, 600, Align::Center), p, WHITE, 0.92);
         }
         Collapsed::Media => {
-            draw_status_ring(cv, st, p.x + 20.0, cy);
+            cv.glyph(G_MUSIC, 12.0, Rect::new(p.x + 10.0, cy - 9.0, 18.0, 18.0), WHITE, if playing { 0.95 } else { 0.45 });
             let time_s = format!("{:02}:{:02}", c.hour, c.minute);
-            cv.text(&time_s, Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
+            cv.text(&time_s, Font::text(13.0, 600, Align::Center), p, WHITE, 0.96);
         }
         Collapsed::Countdown => {
             let cd = &st.countdown;
@@ -68,8 +56,7 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
             let (rx, r) = (p.x + 20.0, 5.4);
             cv.stroke_circle(rx, cy, r, 2.2, WHITE, 0.24);
             cv.stroke_arc(rx, cy, r, -90.0, done as f32 / total as f32 * 360.0, 2.2, WHITE, 0.95);
-            cv.text(&format!("{done}/{}", today.len()), Font::text(14.5, 700, Align::Center), p, WHITE, 0.98);
-            draw_wave_bars(cv, v, Rect::new(p.right() - 28.0, cy - 7.0, 20.0, 14.0), playing);
+            cv.text(&format!("{done}/{}", today.len()), Font::text(13.0, 600, Align::Center), p, WHITE, 0.96);
         }
         Collapsed::Osd => {
             let Some(o) = &st.osd else { return };
@@ -79,9 +66,9 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
                 OsdKind::Brightness => G_BRIGHT,
             };
             cv.glyph(g, 13.5, Rect::new(p.x + 12.0, p.y, 24.0, p.h), WHITE, 0.95);
-            let bar = Rect::new(p.x + 42.0, cy - 2.0, p.w - 92.0, 4.0);
+            let bar = Rect::new(p.x + 40.0, cy - 2.0, (p.w - 92.0).max(24.0), 4.0);
             let level = if o.muted { 0.0 } else { o.level.clamp(0.0, 1.0) };
-            cv.fill_round(bar, 2.0, WHITE, 0.22);
+            cv.fill_round(bar, 2.0, SURFACE, 1.0);
             if level > 0.005 {
                 let fw = (bar.w * level).max(4.0);
                 cv.fill_round(Rect::new(bar.x, bar.y, fw, bar.h), 2.0, WHITE, 1.0);
@@ -113,16 +100,17 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
             let mut right = p.right() - 10.0;
             if b.todo_id.is_some() || b.alarm_id.is_some() {
                 // Compact actions: snooze 5 min and done.
-                let done_r = Rect::new(right - 24.0, cy - 11.0, 24.0, 22.0);
+                let done_r = Rect::new(right - 22.0, cy - 9.0, 18.0, 18.0);
                 let h_done = hover_amt(v, Action::CompleteBanner);
-                cv.fill_round(done_r, 11.0, WHITE, 0.90 + 0.10 * h_done);
-                cv.glyph(G_CHECKMARK, 9.0, done_r, BG, 1.0);
-                hits.push(Hit { rect: done_r.inset(-3.0, -5.0), action: Action::CompleteBanner });
-                let snz_r = Rect::new(done_r.x - 34.0, cy - 11.0, 30.0, 22.0);
+                cv.fill_round(done_r, 9.0, WHITE, 0.92);
+                cv.glyph(G_CHECKMARK, 9.0, done_r, BG, 0.9 + 0.1 * h_done);
+                hits.push(Hit { rect: done_r, action: Action::CompleteBanner });
+                let snz_r = Rect::new(done_r.x - 36.0, cy - 9.0, 32.0, 18.0);
                 let h_snz = hover_amt(v, Action::SnoozeBanner(5));
-                cv.fill_round(snz_r, 11.0, WHITE, 0.14 + 0.10 * h_snz);
-                cv.text("+5", Font::text(10.5, 650, Align::Center), snz_r, WHITE, 0.95);
-                hits.push(Hit { rect: snz_r.inset(-2.0, -5.0), action: Action::SnoozeBanner(5) });
+                cv.fill_round(snz_r, 9.0, SURFACE, 1.0);
+                cv.stroke_round(snz_r, 9.0, 1.0, WHITE, 0.16 + 0.2 * h_snz);
+                cv.text("+5", Font::text(11.0, 600, Align::Center), snz_r, WHITE, 0.95);
+                hits.push(Hit { rect: snz_r, action: Action::SnoozeBanner(5) });
                 right = snz_r.x - 6.0;
             } else if matches!(b.icon, BannerIcon::Charging | BannerIcon::BatteryLow) {
                 if let Some(bat) = st.battery.flatten() {
@@ -131,8 +119,68 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
                 }
             }
             let tx = p.x + 36.0;
-            cv.text(line, Font::text(12.5, 600, Align::Left), Rect::new(tx, p.y, (right - tx).max(0.0), p.h), WHITE, 0.96);
+            cv.text(line, Font::text(13.0, 600, Align::Left), Rect::new(tx, p.y, (right - tx).max(0.0), p.h), WHITE, 0.96);
             hits.push(Hit { rect: p, action: Action::DismissBanner });
         }
+    }
+}
+
+fn draw_collapsed_vertical(
+    cv: &mut Canvas,
+    st: &AppState,
+    v: &View,
+    p: Rect,
+    c: &ailan_core::time::Civil,
+    playing: bool,
+) {
+    let cx = p.x + p.w * 0.5;
+    match v.mode {
+        Collapsed::Minimal => {
+            super::draw_status_ring(cv, st, cx, p.y + 28.0);
+            cv.text("Ailan", Font::text(10.5, 600, Align::Center), Rect::new(p.x, p.y + 52.0, p.w, 22.0), WHITE, 0.92);
+        }
+        Collapsed::Media => {
+            cv.glyph(G_MUSIC, 12.0, Rect::new(cx - 9.0, p.y + 18.0, 18.0, 18.0), WHITE, if playing { 0.95 } else { 0.45 });
+            cv.text(&format!("{:02}", c.hour), Font::text(14.0, 700, Align::Center), Rect::new(p.x, p.y + 44.0, p.w, 20.0), WHITE, 0.96);
+            cv.text(&format!("{:02}", c.minute), Font::text(14.0, 600, Align::Center), Rect::new(p.x, p.y + 64.0, p.w, 20.0), WHITE, 0.80);
+        }
+        Collapsed::Countdown => {
+            let cd = &st.countdown;
+            let r = 6.0;
+            cv.stroke_circle(cx, p.y + 24.0, r, 2.2, WHITE, 0.24);
+            cv.stroke_arc(cx, p.y + 24.0, r, -90.0, (1.0 - cd.progress(v.now)) * 360.0, 2.2, WHITE, 0.95);
+            let alpha = if cd.is_running() { 0.98 } else { 0.62 };
+            let txt = fmt_hms(cd.remaining(v.now));
+            if let Some((a, b)) = txt.rsplit_once(':') {
+                cv.text(a, Font::text(12.5, 700, Align::Center), Rect::new(p.x, p.y + 44.0, p.w, 18.0), WHITE, alpha);
+                cv.text(b, Font::text(12.5, 600, Align::Center), Rect::new(p.x, p.y + 64.0, p.w, 18.0), WHITE, alpha);
+            } else {
+                cv.text(&txt, Font::text(11.5, 700, Align::Center), Rect::new(p.x, p.y + 52.0, p.w, 20.0), WHITE, alpha);
+            }
+        }
+        Collapsed::Stopwatch => {
+            let sw = &st.stopwatch;
+            cv.fill_circle(cx, p.y + 24.0, 3.8, WHITE, if sw.is_running() { 0.95 } else { 0.4 });
+            let e = sw.elapsed(v.now);
+            let label = fmt_stopwatch(e - e % 1000);
+            let label = label.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(label);
+            let alpha = if sw.is_running() { 0.98 } else { 0.62 };
+            if let Some((a, b)) = label.rsplit_once(':') {
+                cv.text(a, Font::text(12.5, 700, Align::Center), Rect::new(p.x, p.y + 44.0, p.w, 18.0), WHITE, alpha);
+                cv.text(b, Font::text(12.5, 600, Align::Center), Rect::new(p.x, p.y + 64.0, p.w, 18.0), WHITE, alpha);
+            } else {
+                cv.text(&label, Font::text(11.5, 700, Align::Center), Rect::new(p.x, p.y + 52.0, p.w, 20.0), WHITE, alpha);
+            }
+        }
+        Collapsed::Todo => {
+            let today = st.data.todos.today_items(v.now, st.offset_min);
+            let total = today.len().max(1);
+            let done = today.iter().filter(|t| t.done).count();
+            let r = 6.0;
+            cv.stroke_circle(cx, p.y + 26.0, r, 2.2, WHITE, 0.24);
+            cv.stroke_arc(cx, p.y + 26.0, r, -90.0, done as f32 / total as f32 * 360.0, 2.2, WHITE, 0.95);
+            cv.text(&format!("{done}/{}", today.len()), Font::text(11.5, 600, Align::Center), Rect::new(p.x, p.y + 52.0, p.w, 22.0), WHITE, 0.96);
+        }
+        Collapsed::Osd | Collapsed::Banner => {}
     }
 }

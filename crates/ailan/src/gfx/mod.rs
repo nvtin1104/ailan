@@ -228,6 +228,22 @@ impl Gfx {
         self.bind_target()
     }
 
+    /// DirectWrite advance width in DIP. Does not present a frame.
+    pub fn measure_line(&mut self, s: &str, font: Font) -> f32 {
+        let mut cv = Canvas {
+            factory: &self.factory,
+            dc: &self.dc,
+            brush: &self.brush,
+            round_stroke: self.round_stroke.as_ref(),
+            dwrite: &self.dwrite,
+            formats: &mut self.formats,
+            cache: &mut self.cache,
+            alpha: 1.0,
+            scale: self.scale,
+        };
+        cv.text_width(s, font, TextStyle::default())
+    }
+
     /// Draw one frame. `Err` means the device was lost; recreate `Gfx`.
     pub fn draw(&mut self, f: impl FnOnce(&mut Canvas)) -> Result<()> {
         unsafe {
@@ -387,70 +403,157 @@ impl Canvas<'_> {
         }
     }
 
-    /// Fill the seamless hardware-notch silhouette with concave top ears (`ear`) on both
-    /// left and right sides at `y = 0` and rounded convex bottom corners (`radius`).
-    pub fn fill_notch(&self, r: Rect, radius: f32, ear: f32, rgb: u32, a: f32) {
-        let e = ear.max(0.0).min(r.h);
-        let rad = radius.max(0.0).min(r.w * 0.5).min((r.h - e).max(0.0));
-        if e < 0.5 {
-            let shell = Rect::new(r.x, -rad, r.w, r.h + rad);
-            self.fill_round(shell, rad, rgb, a);
-            return;
+    /// Perimeter-docked Dynamic Island: flat against docked bezel(s), concave V ears, rounded free corners.
+    pub fn fill_island(&self, r: Rect, dock: crate::ui::Dock, radii: [f32; 4], ear: f32, rgb: u32, a: f32) {
+        if let Some(path) = self.island_path(r, dock, radii, ear, true) {
+            self.set(rgb, a);
+            unsafe { self.dc.FillGeometry(&path, self.brush, None) };
         }
+    }
+
+    pub fn stroke_island(
+        &self,
+        r: Rect,
+        dock: crate::ui::Dock,
+        radii: [f32; 4],
+        ear: f32,
+        width: f32,
+        rgb: u32,
+        a: f32,
+    ) {
+        if let Some(path) = self.island_path(r, dock, radii, ear, true) {
+            self.set(rgb, a);
+            unsafe { self.dc.DrawGeometry(&path, self.brush, width, None) };
+        }
+    }
+
+    fn island_path(
+        &self,
+        r: Rect,
+        dock: crate::ui::Dock,
+        radii: [f32; 4],
+        ear: f32,
+        filled: bool,
+    ) -> Option<windows::Win32::Graphics::Direct2D::ID2D1PathGeometry1> {
+        use crate::ui::Dock;
+        let max = (r.w * 0.5).min(r.h * 0.5);
+        let [tl, tr, br, bl] = radii.map(|v| v.clamp(0.0, max));
+        let e = ear.max(0.0).min(r.h * 0.45).min(r.w * 0.45);
         unsafe {
-            let Ok(path) = self.factory.CreatePathGeometry() else { return };
-            let Ok(sink) = path.Open() else { return };
+            let path = self.factory.CreatePathGeometry().ok()?;
+            let sink = path.Open().ok()?;
+            let begin = if filled { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW };
+            let x0 = r.x;
+            let x1 = r.right();
+            let y0 = r.y;
+            let y1 = r.bottom();
+            let arc = |sink: &windows::Win32::Graphics::Direct2D::ID2D1GeometrySink, x: f32, y: f32, rad: f32, ccw: bool| {
+                if rad > 0.5 {
+                    sink.AddArc(&D2D1_ARC_SEGMENT {
+                        point: Vector2 { X: x, Y: y },
+                        size: D2D_SIZE_F { width: rad, height: rad },
+                        rotationAngle: 0.0,
+                        sweepDirection: if ccw {
+                            D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE
+                        } else {
+                            D2D1_SWEEP_DIRECTION_CLOCKWISE
+                        },
+                        arcSize: D2D1_ARC_SIZE_SMALL,
+                    });
+                } else {
+                    sink.AddLine(Vector2 { X: x, Y: y });
+                }
+            };
 
-            let left = r.x;
-            let right = r.right();
-            let bot = r.bottom();
-
-            sink.BeginFigure(Vector2 { X: left - e, Y: 0.0 }, D2D1_FIGURE_BEGIN_FILLED);
-            sink.AddLine(Vector2 { X: right + e, Y: 0.0 });
-            // Right top concave ear: (right + e, 0) -> (right, e) around center (right + e, e)
-            sink.AddArc(&D2D1_ARC_SEGMENT {
-                point: Vector2 { X: right, Y: e },
-                size: D2D_SIZE_F { width: e, height: e },
-                rotationAngle: 0.0,
-                sweepDirection: D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-                arcSize: D2D1_ARC_SIZE_SMALL,
-            });
-            sink.AddLine(Vector2 { X: right, Y: bot - rad });
-            // Bottom-right convex corner: (right, bot - rad) -> (right - rad, bot)
-            if rad > 0.5 {
-                sink.AddArc(&D2D1_ARC_SEGMENT {
-                    point: Vector2 { X: right - rad, Y: bot },
-                    size: D2D_SIZE_F { width: rad, height: rad },
-                    rotationAngle: 0.0,
-                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    arcSize: D2D1_ARC_SIZE_SMALL,
-                });
+            match dock {
+                Dock::Top => {
+                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y0 }, begin);
+                    sink.AddLine(Vector2 { X: x1 + e, Y: y0 });
+                    arc(&sink, x1, y0 + e, e, true);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 - br });
+                    arc(&sink, x1 - br, y1, br, false);
+                    sink.AddLine(Vector2 { X: x0 + bl, Y: y1 });
+                    arc(&sink, x0, y1 - bl, bl, false);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 + e });
+                    arc(&sink, x0 - e, y0, e, true);
+                }
+                Dock::Bottom => {
+                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y1 }, begin);
+                    arc(&sink, x0, y1 - e, e, true);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 + tl });
+                    arc(&sink, x0 + tl, y0, tl, false);
+                    sink.AddLine(Vector2 { X: x1 - tr, Y: y0 });
+                    arc(&sink, x1, y0 + tr, tr, false);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 - e });
+                    arc(&sink, x1 + e, y1, e, true);
+                    sink.AddLine(Vector2 { X: x0 - e, Y: y1 });
+                }
+                Dock::Left => {
+                    sink.BeginFigure(Vector2 { X: x0, Y: y0 - e }, begin);
+                    arc(&sink, x0 + e, y0, e, true);
+                    sink.AddLine(Vector2 { X: x1 - tr, Y: y0 });
+                    arc(&sink, x1, y0 + tr, tr, false);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 - br });
+                    arc(&sink, x1 - br, y1, br, false);
+                    sink.AddLine(Vector2 { X: x0 + e, Y: y1 });
+                    arc(&sink, x0, y1 + e, e, true);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 - e });
+                }
+                Dock::Right => {
+                    sink.BeginFigure(Vector2 { X: x1, Y: y0 - e }, begin);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 + e });
+                    arc(&sink, x1 - e, y1, e, true);
+                    sink.AddLine(Vector2 { X: x0 + bl, Y: y1 });
+                    arc(&sink, x0, y1 - bl, bl, false);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 + tl });
+                    arc(&sink, x0 + tl, y0, tl, false);
+                    sink.AddLine(Vector2 { X: x1 - e, Y: y0 });
+                    arc(&sink, x1, y0 - e, e, true);
+                }
+                Dock::TopLeft => {
+                    sink.BeginFigure(Vector2 { X: x0, Y: y0 }, begin);
+                    sink.AddLine(Vector2 { X: x1 + e, Y: y0 });
+                    arc(&sink, x1, y0 + e, e, true);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 - br });
+                    arc(&sink, x1 - br, y1, br, false);
+                    sink.AddLine(Vector2 { X: x0 + e, Y: y1 });
+                    arc(&sink, x0, y1 + e, e, true);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 });
+                }
+                Dock::TopRight => {
+                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y0 }, begin);
+                    sink.AddLine(Vector2 { X: x1, Y: y0 });
+                    sink.AddLine(Vector2 { X: x1, Y: y1 + e });
+                    arc(&sink, x1 - e, y1, e, true);
+                    sink.AddLine(Vector2 { X: x0 + bl, Y: y1 });
+                    arc(&sink, x0, y1 - bl, bl, false);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 + e });
+                    arc(&sink, x0 - e, y0, e, true);
+                }
+                Dock::BottomLeft => {
+                    sink.BeginFigure(Vector2 { X: x0, Y: y0 - e }, begin);
+                    arc(&sink, x0 + e, y0, e, true);
+                    sink.AddLine(Vector2 { X: x1 - tr, Y: y0 });
+                    arc(&sink, x1, y0 + tr, tr, false);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 - e });
+                    arc(&sink, x1 + e, y1, e, true);
+                    sink.AddLine(Vector2 { X: x0, Y: y1 });
+                    sink.AddLine(Vector2 { X: x0, Y: y0 - e });
+                }
+                Dock::BottomRight => {
+                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y1 }, begin);
+                    arc(&sink, x0, y1 - e, e, true);
+                    sink.AddLine(Vector2 { X: x0, Y: y0 + tl });
+                    arc(&sink, x0 + tl, y0, tl, false);
+                    sink.AddLine(Vector2 { X: x1 - e, Y: y0 });
+                    arc(&sink, x1, y0 - e, e, true);
+                    sink.AddLine(Vector2 { X: x1, Y: y1 });
+                    sink.AddLine(Vector2 { X: x0 - e, Y: y1 });
+                }
             }
-            sink.AddLine(Vector2 { X: left + rad, Y: bot });
-            // Bottom-left convex corner: (left + rad, bot) -> (left, bot - rad)
-            if rad > 0.5 {
-                sink.AddArc(&D2D1_ARC_SEGMENT {
-                    point: Vector2 { X: left, Y: bot - rad },
-                    size: D2D_SIZE_F { width: rad, height: rad },
-                    rotationAngle: 0.0,
-                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    arcSize: D2D1_ARC_SIZE_SMALL,
-                });
-            }
-            sink.AddLine(Vector2 { X: left, Y: e });
-            // Left top concave ear: (left, e) -> (left - e, 0) around center (left - e, e)
-            sink.AddArc(&D2D1_ARC_SEGMENT {
-                point: Vector2 { X: left - e, Y: 0.0 },
-                size: D2D_SIZE_F { width: e, height: e },
-                rotationAngle: 0.0,
-                sweepDirection: D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-                arcSize: D2D1_ARC_SIZE_SMALL,
-            });
             sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-            if sink.Close().is_ok() {
-                self.set(rgb, a);
-                self.dc.FillGeometry(&path, self.brush, None);
-            }
+            sink.Close().ok()?;
+            Some(path)
         }
     }
 

@@ -2,7 +2,7 @@
 
 **Ailan: a living notch for Windows 10/11, written in native Rust.**
 
-A small pill sits at the top-center of the screen. Hover over it and it opens to show music, a focus timer, your to-do list and system status. When you don't need it, it goes back to sleep.
+A small pill rests at the top-center of the work area. Click it to open music and your to-do list. Drag it to move it. Long alerts grow wider. The hub window can be resized.
 
 | | |
 |---|---|
@@ -14,9 +14,9 @@ A small pill sits at the top-center of the screen. Hover over it and it opens to
 ## Features (MVP)
 
 - **Notch shell**
-  - spring animation, hover to open
+  - spring animation, click to open, drag to move
   - auto-hides while a fullscreen app or game runs
-  - one fixed behaviour, no island settings: shows the live activity (Focus › Music › today's to-dos), otherwise rests as two eyes that follow the pointer anywhere on screen
+  - one fixed behaviour: countdown, stopwatch, music, then today's to-dos; otherwise a quiet "Ailan" capsule
   - starting focus or adding a task in the Hub flies an icon from the button into the island
   - tray icon: Start with Windows, EN/VI language
 - **Clock** with date.
