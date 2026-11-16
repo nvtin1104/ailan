@@ -150,7 +150,6 @@ fn draw_timeline(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     let top = r.y + 46.0;
     if items.is_empty() {
         let (ccx, ccy) = (r.x + r.w * 0.5, r.y + r.h * 0.5);
-        cv.fill_circle_radial(ccx, ccy - 8.0, 46.0, GLOW_AMBER, 0.35);
         cv.glyph(G_CALENDAR, 20.0, Rect::new(ccx - 20.0, ccy - 28.0, 40.0, 40.0), TEXT_BODY, 0.9);
         cv.text(t(lang, Key::NoUpcoming), Font::text(12.5, 500, Align::Center), Rect::new(r.x, ccy + 14.0, r.w, 20.0), TEXT_BODY, 0.9);
         return;
@@ -179,9 +178,6 @@ fn draw_timeline(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
         let c = civil(due, st.offset_min);
         let hhmm = if item.all_day { "—".to_string() } else { format!("{:02}:{:02}", c.hour, c.minute) };
         cv.text_styled(&hhmm, Font::text(13.0, 600, Align::Right), Rect::new(r.x + 12.0, y, time_w, 20.0), if i == 0 { TEXT_HERO } else { TEXT_TITLE }, 1.0, TextStyle::TABULAR);
-        if i == 0 {
-            cv.fill_circle_radial(dot_x, y + 10.0, 14.0, if rgb == ACCENT_AMBER { GLOW_AMBER } else { GLOW_ACCENT }, 1.0);
-        }
         cv.fill_circle(dot_x, y + 10.0, 4.5, rgb, 1.0);
         cv.stroke_circle(dot_x, y + 10.0, 6.5, 1.0, rgb, 0.35);
         let tx = dot_x + 14.0;

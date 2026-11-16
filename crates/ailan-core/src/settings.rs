@@ -65,7 +65,7 @@ pub struct Settings {
     pub hub_page: HubPage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum HubPage {
     #[default]
@@ -73,7 +73,18 @@ pub enum HubPage {
     Todos,
     Reminders,
     Settings,
-    Ai,
+}
+
+impl<'de> serde::Deserialize<'de> for HubPage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer).unwrap_or_default();
+        Ok(match s.as_str() {
+            "todos" => HubPage::Todos,
+            "reminders" => HubPage::Reminders,
+            "settings" => HubPage::Settings,
+            _ => HubPage::Today,
+        })
+    }
 }
 
 impl Default for Settings {

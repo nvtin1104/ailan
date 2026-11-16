@@ -1,4 +1,3 @@
-pub mod ai;
 pub mod clock;
 pub mod reminders;
 pub mod settings;

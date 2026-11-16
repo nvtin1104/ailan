@@ -424,9 +424,8 @@ impl App {
         let st = &self.state;
         let on_clock = self.hub_open && self.hub_ctrl.active_page == HubPage::Reminders;
         let want = match (on_clock, self.hub_ctrl.clock_tab) {
-            (true, 3) if st.stopwatch.is_running() => 100,
             (true, 2) if st.countdown.is_running() => 250,
-            (true, 4) => 1000,
+            (true, 3) => 1000,
             _ => 0,
         };
         if want == self.hub_timer_ms {
@@ -593,36 +592,12 @@ impl App {
                 self.hub_ctrl.capture.clear();
                 self.hub_ctrl.focus = None;
             }
-            HubAction::ClearSearch => {
-                self.hub_ctrl.search.clear();
-                self.hub_ctrl.focus = Some(Field::Search);
+            HubAction::ClearCommand => {
+                self.hub_ctrl.command.clear();
+                self.hub_ctrl.focus = Some(Field::Command);
             }
             HubAction::SubmitAddTodo | HubAction::SubmitTodoInput => {
                 return self.on_hub_action(HubAction::SubmitField(Field::Capture));
-            }
-            HubAction::SubmitField(Field::Search) => {
-                self.hub_ctrl.focus = None;
-            }
-            HubAction::SubmitField(Field::Copilot) => {
-                let plan = ailan_core::command::parse_command(&self.hub_ctrl.copilot);
-                if plan.is_actionable() {
-                    self.hub_ctrl.copilot.clear();
-                    let mut flight = None;
-                    if !plan.title.is_empty() {
-                        let parsed_due = plan.due(now, self.state.offset_min);
-                        let (due, all_day) = match parsed_due {
-                            Some(d) => (Some(d), false),
-                            None => (Some(ailan_core::time::local_midnight(now, self.state.offset_min)), true),
-                        };
-                        let text: String = plan.title.chars().take(MAX_TEXT).collect();
-                        self.state.data.todos.add_full(text, due, all_day, plan.repeat, now);
-                        self.state.mark_data_dirty(now);
-                        flight = Some(if parsed_due.is_some() { (ui::G_BELL, FLY_REMIND) } else { (ui::G_CHECKMARK, FLY_TODO) });
-                    }
-                    if let Some((g, tint)) = flight {
-                        self.launch_flight(g, tint);
-                    }
-                }
             }
             HubAction::SetClockTab(tab) => {
                 self.hub_ctrl.set_clock_tab(tab as usize);
@@ -694,9 +669,6 @@ impl App {
                     self.state.countdown.add(now, ms);
                 }
             }
-            HubAction::StopwatchToggle => self.state.stopwatch.toggle(now),
-            HubAction::StopwatchLap => self.state.stopwatch.lap(now),
-            HubAction::StopwatchReset => self.state.stopwatch.reset(),
             HubAction::WorldAdd(i) => {
                 if let Some((city, tz)) = ailan_core::clock::CITY_PRESETS.get(i as usize) {
                     if !self.state.data.world_clocks.iter().any(|w| w.tz == *tz) {
@@ -710,13 +682,6 @@ impl App {
                     self.state.data.world_clocks.remove(i as usize);
                     self.state.mark_data_dirty(now);
                 }
-            }
-            HubAction::UseExample(i) => {
-                let ex = crate::hub::pages::ai::examples(self.state.lang());
-                if let Some(s) = ex.get(i as usize) {
-                    self.hub_ctrl.copilot = (*s).to_string();
-                }
-                self.hub_ctrl.focus = Some(Field::Copilot);
             }
             HubAction::SubmitField(f @ (Field::Capture | Field::Command)) => {
                 let input = self.hub_ctrl.take_field(f);
@@ -851,7 +816,7 @@ impl App {
             }
             WM_TIMER if wparam.0 == T_HUB => {
                 let now = sys::now_ms();
-                if self.state.world_offsets.len() != self.state.data.world_clocks.len() || self.hub_ctrl.clock_tab == 4 {
+                if self.state.world_offsets.len() != self.state.data.world_clocks.len() || self.hub_ctrl.clock_tab == 3 {
                     self.refresh_world_offsets(now);
                 }
                 self.hub_needs_draw = true;

@@ -70,7 +70,6 @@ fn run(t0: Instant) -> Result<()> {
             "todos" => HubPage::Todos,
             "reminders" => HubPage::Reminders,
             "settings" => HubPage::Settings,
-            "ai" => HubPage::Ai,
             _ => return None,
         })
     });

@@ -131,7 +131,7 @@ pub fn draw(
     let about_info_w = about_r.w - 82.0;
     cv.text("AiLan — Dynamic Island for Windows", Font::text(13.0, 650, Align::Left), Rect::new(about_info_x, about_r.y + 12.0, about_info_w, 18.0), TEXT_PRIMARY, 1.0);
     cv.text(
-        "\"Ai Lan\" = Island (tiếng Việt) + AI Assistant · Fluent Liquid Glass cao cấp.",
+        "\"AiLan\" = Island (tiếng Việt) · Fluent Liquid Glass cho Windows.",
         Font::text(11.0, 400, Align::Left),
         Rect::new(about_info_x, about_r.y + 32.0, about_info_w, 16.0),
         TEXT_MUTED,

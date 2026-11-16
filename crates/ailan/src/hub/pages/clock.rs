@@ -1,6 +1,6 @@
-//! Clock tools on the Reminders page: alarms, countdown timer, stopwatch, world clock.
+//! Clock tools on the Reminders page: alarms, countdown timer, world clock.
 
-use ailan_core::clock::{fmt_hms, fmt_stopwatch, Alarm, CITY_PRESETS, EVERY_DAY, WEEKDAYS};
+use ailan_core::clock::{fmt_hms, Alarm, CITY_PRESETS, EVERY_DAY, WEEKDAYS};
 use ailan_core::i18n::{t, weekday, Key, Lang};
 use ailan_core::reminder::fmt_due;
 use ailan_core::time::{civil, local_day, MINUTE};
@@ -11,27 +11,25 @@ use crate::hub::{Field, HubAction, PageCtx};
 use crate::ui::{G_ADD, G_BELL, G_PAUSE, G_PLAY, G_RESET};
 
 const G_MINUS: char = '\u{E738}';
-const G_FLAG: char = '\u{E7C1}';
 const G_GLOBE: char = '\u{E774}';
 
 /// Tab labels; Compact uses a shorter world-clock label.
-pub fn tab_labels(lang: Lang, compact: bool) -> [&'static str; 5] {
+pub fn tab_labels(lang: Lang, compact: bool) -> [&'static str; 4] {
     [
         t(lang, Key::ClockReminders),
         t(lang, Key::ClockAlarms),
         t(lang, Key::ClockTimer),
-        t(lang, Key::ClockStopwatch),
         if compact { t(lang, Key::ClockWorldShort) } else { t(lang, Key::ClockWorld) },
     ]
 }
 
-const TAB_ICONS: [char; 5] = ['\u{EA8F}', '\u{E917}', '\u{E823}', '\u{E916}', '\u{E774}'];
+const TAB_ICONS: [char; 4] = ['\u{EA8F}', '\u{E917}', '\u{E823}', '\u{E774}'];
 
 /// Reminders page tab bar. Returns the y below it.
 pub fn draw_tabs(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, y: f32) -> f32 {
     let labels = tab_labels(cx.lang(), cx.compact);
     let items: Vec<(&str, Option<char>)> = labels.iter().zip(TAB_ICONS).map(|(l, g)| (*l, Some(g))).collect();
-    let hover = (0..5).position(|i| cx.hover == Some(HubAction::SetClockTab(i as u8)));
+    let hover = (0..4).position(|i| cx.hover == Some(HubAction::SetClockTab(i as u8)));
     let tabs = draw_tab_strip(cv, Rect::new(r.x, y, r.w, 40.0), &items, cx.clock_tab_pos, hover, cx.compact);
     for (i, tr) in tabs.iter().enumerate() {
         cx.hit(*tr, HubAction::SetClockTab(i as u8));
@@ -72,33 +70,43 @@ struct Btn {
     primary: bool,
 }
 
-/// Lay buttons out as one block centred on `center_x`.
-fn button_group(cv: &mut Canvas, cx: &mut PageCtx, center_x: f32, y: f32, h: f32, items: &[Btn]) {
+/// Lay buttons out as one block centred on `center_x`, clamped to `max_w`.
+fn button_group(cv: &mut Canvas, cx: &mut PageCtx, center_x: f32, y: f32, h: f32, max_w: f32, items: &[Btn]) {
     let f = Font::text(13.0, 650, Align::Left);
-    let widths: Vec<f32> = items
+    let mut widths: Vec<f32> = items
         .iter()
         .map(|b| {
             let tw = cv.text_width(&b.label, f, TextStyle::TABULAR);
-            let icon = if b.glyph.is_some() { 24.0 } else { 0.0 };
-            (tw + icon + 36.0).max(if b.primary { 124.0 } else { 56.0 })
+            let icon = if b.glyph.is_some() { 20.0 } else { 0.0 };
+            (tw + icon + 26.0).max(if b.primary { 104.0 } else { 44.0 })
         })
         .collect();
-    let gap = 10.0;
-    let total: f32 = widths.iter().sum::<f32>() + gap * (items.len().saturating_sub(1)) as f32;
+    let gap = 8.0;
+    let gaps = gap * (items.len().saturating_sub(1)) as f32;
+    let sum_w: f32 = widths.iter().sum();
+    let avail = (max_w - gaps).max(80.0);
+    if sum_w > avail {
+        let scale = avail / sum_w;
+        for w in &mut widths {
+            *w = (*w * scale).max(36.0);
+        }
+    }
+    let total: f32 = widths.iter().sum::<f32>() + gaps;
     let mut x = center_x - total * 0.5;
     for (b, w) in items.iter().zip(widths) {
         let br = Rect::new(x, y, w, h);
         let kind = if b.primary { ButtonKind::Primary } else { ButtonKind::Ghost };
         draw_button(cv, br, "", kind, cx.hover_t(b.action));
-        let fg = if b.primary { WHITE } else { TEXT_TITLE };
+        let fg = if b.primary { BG_DEEP_CANVAS } else { TEXT_TITLE };
         let tw = cv.text_width(&b.label, f, TextStyle::TABULAR);
-        let content = tw + if b.glyph.is_some() { 24.0 } else { 0.0 };
+        let icon_gap = if b.glyph.is_some() { 20.0 } else { 0.0 };
+        let content = (tw + icon_gap).min(w - 8.0);
         let mut cx0 = br.x + (w - content) * 0.5;
         if let Some(g) = b.glyph {
             cv.glyph(g, 10.5, Rect::new(cx0, br.y, 16.0, br.h), fg, 1.0);
-            cx0 += 24.0;
+            cx0 += 20.0;
         }
-        cv.text_styled(&b.label, f, Rect::new(cx0, br.y, tw + 2.0, br.h), fg, 1.0, TextStyle::TABULAR);
+        cv.text_styled(&b.label, f, Rect::new(cx0, br.y, (tw + 2.0).min(br.right() - cx0), br.h), fg, 1.0, TextStyle::TABULAR);
         cx.hit(br, b.action);
         x += w + gap;
     }
@@ -115,7 +123,6 @@ pub fn draw_alarms(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
     let alarms: Vec<&Alarm> = st.data.alarms.sorted();
     if alarms.is_empty() {
         let er = Rect::new(r.x, y, r.w, (r.bottom() - y).max(220.0));
-        cv.fill_circle_radial(er.x + er.w * 0.5, er.y + 70.0, 70.0, GLOW_AMBER, 0.5);
         cv.glyph(G_BELL, 26.0, Rect::new(er.x, er.y + 46.0, er.w, 48.0), TEXT_BODY, 0.9);
         cv.text(t(lang, Key::NoAlarms), Font::text(15.0, 650, Align::Center), Rect::new(er.x, er.y + 104.0, er.w, 22.0), TEXT_HERO, 1.0);
         cv.text(t(lang, Key::AlarmHint), Font::text(12.0, 400, Align::Center), Rect::new(er.x, er.y + 128.0, er.w, 18.0), TEXT_BODY, 0.9);
@@ -228,18 +235,17 @@ pub fn draw_timer(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, y: f32) {
     let main = Rect::new(r.x, y, main_w, main_h);
     cx.card(cv, main, RADIUS_CARD, 0.0);
 
-    // Ring + buttons as one block, centred in the card.
-    let ring_r = if compact { 84.0 } else { (main.h * 0.28).clamp(96.0, 132.0) };
-    let (gap, bh) = (28.0, 40.0);
+    // Ring + buttons as one block, centred in the card and bounded by both width and height.
+    let (gap, bh) = (22.0, 38.0);
+    let max_r_w = (main.w * 0.5 - 24.0).max(52.0);
+    let max_r_h = ((main.h - gap - bh - 44.0) * 0.5).max(52.0);
+    let ring_r = if compact { 80.0 } else { (main.h * 0.28).min(max_r_w).min(max_r_h).clamp(52.0, 120.0) };
     let block_y = main.y + (main.h - (ring_r * 2.0 + gap + bh)) * 0.5;
     let (rcx, rcy) = (main.x + main.w * 0.5, block_y + ring_r);
     let prog = if cd.is_active() { 1.0 - cd.progress(cx.now) } else { 1.0 };
-    if cd.is_running() {
-        cv.fill_circle_radial(rcx, rcy, ring_r * 1.6, GLOW_AMBER, 0.4);
-    }
-    draw_progress_ring(cv, rcx, rcy, ring_r, 7.0, prog, ACCENT_AMBER, cd.is_running());
+    draw_progress_ring(cv, rcx, rcy, ring_r, 6.5, prog, ACCENT_AMBER, cd.is_running());
     let rem = fmt_hms(cd.remaining(cx.now));
-    let big = if compact { 34.0 } else { (ring_r * 0.42).clamp(40.0, 54.0) };
+    let big = if compact { 32.0 } else { (ring_r * 0.40).clamp(28.0, 48.0) };
     cv.text_styled(&rem, Font::text(big, 700, Align::Center), Rect::new(rcx - ring_r, rcy - big * 0.7, ring_r * 2.0, big * 1.4), TEXT_HERO, 1.0, TextStyle::TABULAR);
     let total = fmt_hms(cd.duration);
     cv.text_styled(&total, FONT_META_C, Rect::new(rcx - ring_r, rcy + big * 0.7, ring_r * 2.0, 18.0), TEXT_SECTION, 1.0, TextStyle::TABULAR);
@@ -255,7 +261,7 @@ pub fn draw_timer(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, y: f32) {
         },
         Btn { action: HubAction::CountdownAdd(60), glyph: None, label: "+1′".into(), primary: false },
     ];
-    button_group(cv, cx, rcx, rcy + ring_r + gap, bh, &items);
+    button_group(cv, cx, rcx, rcy + ring_r + gap, bh, (main.w - 24.0).max(140.0), &items);
     if cd.is_active() {
         let reset = HubAction::CountdownReset;
         let rr = Rect::new(main.right() - 16.0 - 36.0, main.y + 14.0, 36.0, 36.0);
@@ -276,7 +282,7 @@ pub fn draw_timer(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, y: f32) {
     let gap = 8.0;
     let cw = (pr.w - 32.0 - gap * (cols as f32 - 1.0)) / cols as f32;
     let rows = presets.len().div_ceil(cols) as f32;
-    let ch = if compact { 38.0 } else { ((pr.h - 42.0 - 16.0 - gap * (rows - 1.0)) / rows).clamp(54.0, 96.0) };
+    let ch = if compact { 38.0 } else { ((pr.h - 42.0 - 16.0 - gap * (rows - 1.0)) / rows).clamp(44.0, 56.0) };
     for (i, m) in presets.iter().enumerate() {
         let (row, col) = (i / cols, i % cols);
         let cr = Rect::new(pr.x + 16.0 + col as f32 * (cw + gap), pr.y + 42.0 + row as f32 * (ch + gap), cw, ch);
@@ -300,70 +306,6 @@ pub fn draw_timer(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, y: f32) {
     cx.content_h = Some(pr.bottom().max(main.bottom()) + cx.scroll - r.y + 8.0);
 }
 
-// ---- Stopwatch -------------------------------------------------------------------------
-
-pub fn draw_stopwatch(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
-    let lang = cx.lang();
-    let sw = &cx.st.stopwatch;
-    // The card fills the page; with laps it takes the upper half and the list follows.
-    let avail = (r.bottom() - (y + cx.scroll)).max(0.0);
-    let has_laps = !sw.laps.is_empty();
-    let card_h = if has_laps { (avail * 0.5).max(230.0) } else { avail.max(260.0) };
-    let main = Rect::new(r.x, y, r.w, card_h);
-    cx.card(cv, main, RADIUS_CARD, 0.0);
-
-    // Time + buttons as one block, centred in the card.
-    let time_h = if cx.compact { 64.0 } else { 84.0 };
-    let (gap, bh) = (26.0, 42.0);
-    let block_y = main.y + (main.h - (time_h + gap + bh)) * 0.5;
-    let (ccx, ccy) = (main.x + main.w * 0.5, block_y + time_h * 0.5);
-    if sw.is_running() {
-        cv.fill_circle_radial(ccx, ccy, main.w.min(main.h) * 0.55, GLOW_ACCENT, 0.35);
-    }
-    let el = fmt_stopwatch(sw.elapsed(cx.now));
-    cv.text_styled(&el, Font::text(if cx.compact { 48.0 } else { 64.0 }, 700, Align::Center), Rect::new(main.x, block_y, main.w, time_h), TEXT_HERO, 1.0, TextStyle::TABULAR);
-
-    let running = sw.is_running();
-    let mut items = Vec::new();
-    if running {
-        items.push(Btn { action: HubAction::StopwatchLap, glyph: Some(G_FLAG), label: t(lang, Key::Lap).into(), primary: false });
-    }
-    items.push(Btn {
-        action: HubAction::StopwatchToggle,
-        glyph: Some(if running { G_PAUSE } else { G_PLAY }),
-        label: if running { t(lang, Key::Pause) } else { t(lang, Key::Start) }.into(),
-        primary: true,
-    });
-    if sw.is_active() && !running {
-        items.push(Btn { action: HubAction::StopwatchReset, glyph: Some(G_RESET), label: t(lang, Key::Reset).into(), primary: false });
-    }
-    button_group(cv, cx, ccx, block_y + time_h + gap, bh, &items);
-    y = main.bottom() + 20.0;
-
-    // Laps, newest first; best (mint) / worst (rose) once there are 3+.
-    let splits = sw.lap_splits();
-    if !splits.is_empty() {
-        draw_section_header(cv, Rect::new(r.x, y, r.w, 18.0), t(lang, Key::Laps));
-        y += 26.0;
-        let best = splits.iter().copied().min().unwrap_or(0);
-        let worst = splits.iter().copied().max().unwrap_or(0);
-        let mark = splits.len() >= 3;
-        for (i, (split, total)) in splits.iter().zip(sw.laps.iter()).enumerate().rev() {
-            let row = Rect::new(r.x, y, r.w, 38.0);
-            if y + 38.0 >= r.y - 10.0 && y <= r.bottom() + 10.0 {
-                cv.fill_round(row, RADIUS_ITEM, WHITE, if i % 2 == 0 { 0.035 } else { 0.015 });
-                let col = if mark && *split == best { ACCENT_MINT } else if mark && *split == worst { ACCENT_ROSE } else { TEXT_TITLE };
-                let f = Font::text(13.0, 600, Align::Left);
-                cv.text_styled(&format!("{} {}", t(lang, Key::Lap), i + 1), f, Rect::new(row.x + 16.0, row.y, 120.0, row.h), TEXT_BODY, 1.0, TextStyle::TABULAR);
-                cv.text_styled(&fmt_stopwatch(*split), Font::text(13.0, 600, Align::Center), Rect::new(row.x, row.y, row.w, row.h), col, 1.0, TextStyle::TABULAR);
-                cv.text_styled(&fmt_stopwatch(*total), Font::text(13.0, 500, Align::Right), Rect::new(row.x, row.y, row.w - 16.0, row.h), TEXT_SECTION, 1.0, TextStyle::TABULAR);
-            }
-            y += 42.0;
-        }
-    }
-    cx.content_h = Some(y + cx.scroll - r.y + 8.0);
-}
-
 // ---- World clock -----------------------------------------------------------------------
 
 fn fmt_offset_delta(mins: i32) -> String {
@@ -384,7 +326,6 @@ pub fn draw_world(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
     // Local time
     let lr = Rect::new(r.x, y, r.w, 76.0);
     cx.card(cv, lr, RADIUS_CARD, 0.0);
-    cv.fill_circle_radial(lr.x + 30.0, lr.y + 38.0, 40.0, GLOW_ACCENT, 0.5);
     cv.glyph(G_GLOBE, 16.0, Rect::new(lr.x + 16.0, lr.y, 28.0, lr.h), ACCENT_PRIMARY_HI, 1.0);
     cv.text(t(lang, Key::LocalTime), Font::text(14.0, 600, Align::Left), Rect::new(lr.x + 54.0, lr.y + 16.0, lr.w - 200.0, 20.0), TEXT_TITLE, 1.0);
     let utc = fmt_offset_delta(st.offset_min);

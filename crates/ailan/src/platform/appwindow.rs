@@ -17,8 +17,8 @@ const DWMWCP_DONOTROUND: u32 = 1;
 const DWMWCP_ROUND: u32 = 2;
 // DWMWA_SYSTEMBACKDROP_TYPE = 38
 const DWMWA_SYSTEMBACKDROP_TYPE: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(38);
-// DWMSBT_TRANSIENTWINDOW = 3 (Acrylic / Liquid Glass backdrop)
-const DWMSBT_TRANSIENTWINDOW: u32 = 3;
+// DWMSBT_MAINWINDOW = 2 (Smooth Mica backdrop without Acrylic noise grain)
+const DWMSBT_MAINWINDOW: u32 = 2;
 // DWMWA_MICA_EFFECT = 1029 (Windows 11 build 22000 fallback)
 const DWMWA_MICA_EFFECT: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(1029);
 
@@ -101,8 +101,8 @@ pub fn apply_modern_window_styling(hwnd: HWND) {
         // 2. Windows 11 Rounded Corners (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
         set_window_rounded(hwnd, true);
 
-        // 3. Liquid Glass Acrylic backdrop (Windows 11 22621+) with Mica fallback (22000)
-        let backdrop = DWMSBT_TRANSIENTWINDOW;
+        // 3. Smooth Mica backdrop (Windows 11 22621+) without Acrylic noise grain
+        let backdrop = DWMSBT_MAINWINDOW;
         let res = DwmSetWindowAttribute(
             hwnd,
             DWMWA_SYSTEMBACKDROP_TYPE,

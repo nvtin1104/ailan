@@ -54,11 +54,8 @@ pub fn todo_row(cv: &mut Canvas, cx: &mut PageCtx, row: Rect, item: &Todo, frame
     if framed {
         cx.card(cv, row, RADIUS_ITEM, hv);
     } else if hot {
-        cv.fill_round(row, RADIUS_ITEM, WHITE, 0.045);
-        if let Some(m) = cx.mouse {
-            draw_radial_spotlight(cv, row, RADIUS_ITEM, m, 0.05);
-        }
-        cx.spots.push(row);
+        cv.fill_round(row, RADIUS_ITEM, WHITE, 0.055);
+        cv.hairline_round(row, RADIUS_ITEM, WHITE, 0.08);
     }
 
     let cy = row.y + row.h * 0.5;
@@ -187,34 +184,17 @@ pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     let st = cx.st;
     let mut y = r.y - cx.scroll;
 
-    // 1. Toolbar: filter tabs + search
+    // 1. Toolbar: filter tabs (search is integrated into the single header bar)
     let labels = [t(lang, Key::AllTasks), t(lang, Key::TodayTasks), t(lang, Key::UpcomingTasks), t(lang, Key::CompletedTasks)];
     let icons = [G_LIST, G_CALENDAR, G_CHEVRON_RIGHT, G_CHECKMARK];
-    let (seg_r, search_r) = if cx.compact {
-        (Rect::new(r.x, y, r.w, 40.0), Rect::new(r.x, y + 50.0, r.w, 34.0))
-    } else {
-        let sw = 220.0f32.min(r.w * 0.34);
-        (Rect::new(r.x, y, r.w, 40.0), Rect::new(r.right() - sw, y + 2.0, sw, 34.0))
-    };
+    let seg_r = Rect::new(r.x, y, r.w, 40.0);
     let items: Vec<(&str, Option<char>)> = labels.iter().zip(icons).map(|(l, g)| (*l, Some(g))).collect();
     let hover_tab = TodoFilter::ALL.iter().position(|f| cx.hover == Some(HubAction::SetTodoFilter(*f)));
     let tabs = draw_tab_strip(cv, seg_r, &items, cx.filter_pos, hover_tab, cx.compact);
     for (tr, f) in tabs.iter().zip(TodoFilter::ALL) {
         cx.hit(*tr, HubAction::SetTodoFilter(f));
     }
-    let s_focused = cx.focus == Some(Field::Search);
-    if !cx.search.is_empty() {
-        let xr = Rect::new(search_r.right() - 30.0, search_r.y + 3.0, 28.0, 28.0);
-        cx.hit(xr, HubAction::ClearSearch);
-    }
-    let s_hv = cx.hover_t(HubAction::FocusField(Field::Search));
-    draw_text_input(cv, search_r, cx.search, t(lang, Key::SearchHint), s_focused, s_hv, Font::text(12.5, 450, Align::Left), Some(G_SEARCH), 22.0);
-    if !cx.search.is_empty() {
-        let xr = Rect::new(search_r.right() - 30.0, search_r.y + 3.0, 28.0, 28.0);
-        cv.glyph(G_CHROME_CLOSE, 9.0, xr, TEXT_BODY, 0.6 + 0.4 * cx.hover_t(HubAction::ClearSearch));
-    }
-    cx.hit(search_r, HubAction::FocusField(Field::Search));
-    y = search_r.bottom().max(seg_r.bottom()) + 14.0;
+    y = seg_r.bottom() + 14.0;
 
     // 2. Capture
     capture_bar(cv, cx, Rect::new(r.x, y, r.w, 44.0), t(lang, Key::CaptureHint));

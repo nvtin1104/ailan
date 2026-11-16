@@ -34,8 +34,8 @@ const NAV_H: f32 = 38.0;
 const DOCK_H: f32 = 50.0;
 const MAX_FIELD_CHARS: usize = 200;
 
-pub const NAV_PAGES: [HubPage; 5] =
-    [HubPage::Today, HubPage::Todos, HubPage::Reminders, HubPage::Settings, HubPage::Ai];
+pub const NAV_PAGES: [HubPage; 4] =
+    [HubPage::Today, HubPage::Todos, HubPage::Reminders, HubPage::Settings];
 
 fn nav_index(p: HubPage) -> usize {
     NAV_PAGES.iter().position(|x| *x == p).unwrap_or(0)
@@ -64,8 +64,6 @@ pub struct HubController {
     pub focus: Option<Field>,
     pub capture: String,
     pub command: String,
-    pub search: String,
-    pub copilot: String,
     pub alarm_input: String,
     /// Reminders page tab: 0 reminders, 1 alarms, 2 timer, 3 stopwatch, 4 world clock.
     pub clock_tab: usize,
@@ -110,8 +108,6 @@ impl HubController {
             focus: None,
             capture: String::new(),
             command: String::new(),
-            search: String::new(),
-            copilot: String::new(),
             alarm_input: String::new(),
             clock_tab: 0,
             clock_ind: Indicator::new(0),
@@ -176,7 +172,7 @@ impl HubController {
         if tab != self.clock_tab {
             self.restart_fade();
         }
-        self.clock_tab = tab.min(4);
+        self.clock_tab = tab.min(3);
         self.clock_ind.go(self.clock_tab);
         self.scroll_to(0.0, true);
         if matches!(self.focus, Some(Field::Capture | Field::Alarm)) {
@@ -286,7 +282,7 @@ impl HubController {
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> Option<HubAction> {
         let act = self.hit_at(x, y);
         self.last_press = Some((x, y));
-        let keeps_focus = matches!(act, Some(HubAction::FocusField(_) | HubAction::SubmitField(_) | HubAction::ClearSearch | HubAction::UseExample(_)));
+        let keeps_focus = matches!(act, Some(HubAction::FocusField(_) | HubAction::SubmitField(_) | HubAction::ClearCommand));
         if !keeps_focus {
             self.focus = None;
         }
@@ -299,8 +295,6 @@ impl HubController {
         match f {
             Field::Capture => &mut self.capture,
             Field::Command => &mut self.command,
-            Field::Search => &mut self.search,
-            Field::Copilot => &mut self.copilot,
             Field::Alarm => &mut self.alarm_input,
         }
     }
@@ -320,7 +314,7 @@ impl HubController {
             return false;
         }
         buf.push(c);
-        if f == Field::Search {
+        if f == Field::Command {
             self.scroll_to(0.0, true);
         }
         true
@@ -370,12 +364,11 @@ impl HubController {
         if c.is_empty() {
             return None;
         }
-        let table: [(HubPage, &[&str]); 5] = [
+        let table: [(HubPage, &[&str]); 4] = [
             (HubPage::Today, &["today", "hôm nay", "home", "nay"]),
             (HubPage::Todos, &["todos", "tasks", "việc", "viec"]),
             (HubPage::Reminders, &["reminders", "nhắc", "nhac", "lịch"]),
             (HubPage::Settings, &["settings", "cài đặt", "cai dat", "prefs"]),
-            (HubPage::Ai, &["ai", "copilot", "brief"]),
         ];
         table.iter().find(|(_, words)| words.iter().any(|w| w.starts_with(&c))).map(|(p, _)| *p)
     }
@@ -417,7 +410,7 @@ impl HubController {
         let act = HubAction::FocusField(Field::Command);
         let hv = self.hover_t(act);
         let hint = if self.is_compact { "Ctrl K" } else { t(lang, Key::CommandHint) };
-        let reserve = if focused || !self.command.is_empty() { 22.0 } else if self.is_compact { 0.0 } else { 56.0 };
+        let reserve = if !self.command.is_empty() { 46.0 } else if focused { 22.0 } else if self.is_compact { 0.0 } else { 56.0 };
         draw_text_input(cv, bar, &self.command, hint, focused, hv, Font::text(12.5, 450, Align::Left), Some(G_SEARCH), reserve);
         if !focused && self.command.is_empty() && !self.is_compact {
             let kbd = "Ctrl K";
@@ -426,9 +419,10 @@ impl HubController {
             cv.fill_round(kr, 5.0, WHITE, 0.06);
             cv.hairline_round(kr, 5.0, WHITE, 0.12);
             cv.text(kbd, Font::text(10.5, 600, Align::Center), kr, TEXT_BODY, 0.9);
-        } else if focused && !self.command.is_empty() {
-            let rr = Rect::new(bar.right() - 26.0, bar.y + 4.0, 20.0, bar.h - 8.0);
-            cv.glyph(G_RETURN, 10.0, rr, ACCENT_PRIMARY_HI, 0.9);
+        } else if !self.command.is_empty() {
+            let xr = Rect::new(bar.right() - 28.0, bar.y + 3.0, 24.0, bar.h - 6.0);
+            cv.glyph(G_CHROME_CLOSE, 9.0, xr, TEXT_BODY, 0.6 + 0.4 * self.hover_t(HubAction::ClearCommand));
+            self.push_hit(xr, HubAction::ClearCommand);
         }
         self.push_hit(bar, act);
 
@@ -450,7 +444,6 @@ impl HubController {
 
         // Brand
         let tile = Rect::new(16.0, 10.0, 28.0, 28.0);
-        cv.fill_circle_radial(tile.x + 14.0, tile.y + 14.0, 30.0, GLOW_ACCENT, 0.5);
         draw_app_logo(cv, tile);
         cv.text("AiLan", Font::text(15.0, 700, Align::Left), Rect::new(52.0, 9.0, 140.0, 18.0), TEXT_HERO, 1.0);
         cv.text("Personal Hub", Font::text(11.0, 450, Align::Left), Rect::new(52.0, 26.0, 140.0, 14.0), TEXT_SECTION, 1.0);
@@ -524,7 +517,6 @@ impl HubController {
         self.render_page(cv, st, now, content);
 
         let drad = DOCK_H * 0.5;
-        cv.fill_circle_radial(dock.x + dock.w * 0.5, dock.bottom(), dock.w * 0.6, GLOW_ACCENT, 0.18);
         draw_specular_rounded_rect(cv, dock, drad, Surface::Elevated, 0.0, self.mouse);
         let pill_rad = concentric(drad, pad);
         let pill = Rect::new(dock.x + pad + self.nav.pos() * item_w, dock.y + pad, item_w, DOCK_H - pad * 2.0);
@@ -604,6 +596,7 @@ impl HubController {
             cv.push_fade_layer(view, g, (view.x, view.y), (view.x, view.bottom()))
         };
         let content_h = {
+            let search = if self.command.trim_start().starts_with('/') { "" } else { self.command.as_str() };
             let mut ctx = PageCtx {
                 st,
                 now,
@@ -611,8 +604,7 @@ impl HubController {
                 mouse: self.mouse,
                 focus: self.focus,
                 capture: &self.capture,
-                search: &self.search,
-                copilot: &self.copilot,
+                search,
                 filter: self.todo_filter,
                 filter_pos: self.filter_ind.pos(),
                 alarm_input: &self.alarm_input,
@@ -631,7 +623,6 @@ impl HubController {
                 HubPage::Todos => pages::todos::draw(cv, &mut ctx, pr),
                 HubPage::Reminders => pages::reminders::draw(cv, &mut ctx, pr),
                 HubPage::Settings => pages::settings::draw(cv, st, pr, now, scroll, self.hover, ctx.hits),
-                HubPage::Ai => pages::ai::draw(cv, &mut ctx, pr),
             }
             ctx.content_h
         };
@@ -674,7 +665,6 @@ fn nav_glyph(p: HubPage) -> Option<char> {
         HubPage::Todos => Some(G_CHECKMARK),
         HubPage::Reminders => Some(G_TIMER),
         HubPage::Settings => Some(G_SETTINGS),
-        HubPage::Ai => None,
     }
 }
 
@@ -684,7 +674,6 @@ fn nav_label(lang: ailan_core::i18n::Lang, p: HubPage) -> &'static str {
         HubPage::Todos => t(lang, Key::NavTodos),
         HubPage::Reminders => t(lang, Key::NavReminders),
         HubPage::Settings => t(lang, Key::NavSettings),
-        HubPage::Ai => t(lang, Key::NavAi),
     }
 }
 

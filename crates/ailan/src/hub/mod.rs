@@ -36,12 +36,8 @@ impl TodoFilter {
 pub enum Field {
     /// Quick-capture bar (Today / Todos / Reminders).
     Capture,
-    /// `Ctrl+K` command bar in the titlebar.
+    /// `Ctrl+K` unified search & command bar in the titlebar.
     Command,
-    /// Live filter on the Todos page.
-    Search,
-    /// Natural-language command box on the AI page.
-    Copilot,
     /// "New alarm" input on the Reminders → Alarms tab.
     Alarm,
 }
@@ -58,7 +54,7 @@ pub enum HubAction {
     // Text fields
     FocusField(Field),
     SubmitField(Field),
-    ClearSearch,
+    ClearCommand,
 
     // Legacy capture aliases (older pages)
     StartAddTodo,
@@ -97,15 +93,8 @@ pub enum HubAction {
     CountdownSet(u32),
     /// Add (or subtract) seconds.
     CountdownAdd(i32),
-    StopwatchToggle,
-    StopwatchLap,
-    StopwatchReset,
     WorldAdd(u8),
     WorldRemove(u8),
-
-    // AI page
-    /// Fill the AI command box with example `n`.
-    UseExample(u8),
 
     // Settings actions
     SetLanguage(Lang),
@@ -136,7 +125,6 @@ pub struct PageCtx<'a> {
     pub focus: Option<Field>,
     pub capture: &'a str,
     pub search: &'a str,
-    pub copilot: &'a str,
     pub alarm_input: &'a str,
     /// Selected Reminders tab (0 reminders, 1 alarms, 2 timer, 3 stopwatch, 4 world) and
     /// its spring-animated indicator position.

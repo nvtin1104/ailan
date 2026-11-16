@@ -29,8 +29,7 @@ pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     match cx.clock_tab {
         1 => crate::hub::pages::clock::draw_alarms(cv, cx, r, y),
         2 => crate::hub::pages::clock::draw_timer(cv, cx, r, y),
-        3 => crate::hub::pages::clock::draw_stopwatch(cv, cx, r, y),
-        4 => crate::hub::pages::clock::draw_world(cv, cx, r, y),
+        3 => crate::hub::pages::clock::draw_world(cv, cx, r, y),
         _ => draw_reminders(cv, cx, r, y),
     }
 }
@@ -78,9 +77,6 @@ fn draw_reminders(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
             cv.fill_round(hr, RADIUS_BUTTON, WHITE, 0.04);
         }
         cv.glyph(if collapsed { G_CHEVRON_RIGHT } else { G_CHEVRON_DOWN }, 9.0, Rect::new(hr.x + 4.0, hr.y, 18.0, hr.h), TEXT_BODY, 0.9);
-        if gi == 0 {
-            cv.fill_circle_radial(hr.x + 32.0, hr.y + hr.h * 0.5, 10.0, GLOW_ROSE, 1.0);
-        }
         cv.fill_circle(hr.x + 32.0, hr.y + hr.h * 0.5, 4.0, rgb, 1.0);
         let up = title.to_uppercase();
         cv.text_styled(&up, Font::text(12.0, 650, Align::Left), Rect::new(hr.x + 44.0, hr.y, hr.w - 100.0, hr.h), if gi == 0 { mix(rgb, WHITE, 0.25) } else { TEXT_TITLE }, 1.0, TextStyle::tracked(SECTION_TRACKING));

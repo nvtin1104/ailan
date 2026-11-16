@@ -14,13 +14,13 @@ use crate::gfx::{Align, Canvas, Font, Gradient, Rect, RichSpan, TextStyle};
 use crate::ui::{G_CHECKMARK, G_DELETE};
 
 // ---- Background layers ---------------------------------------------------------------
-pub const BG_DEEP_CANVAS: u32 = 0x141414;
-pub const BG_DEEP_CANVAS_ALPHA: f32 = 0.92;
-pub const BG_SIDEBAR: u32 = 0x141414;
-pub const BG_SIDEBAR_ALPHA: f32 = 0.72;
-pub const BG_SURFACE_TOP: u32 = 0x212121;
-pub const BG_SURFACE_BOTTOM: u32 = 0x212121;
-pub const BG_SURFACE_ELEVATED: u32 = 0x2A2A2A;
+pub const BG_DEEP_CANVAS: u32 = 0x141416;
+pub const BG_DEEP_CANVAS_ALPHA: f32 = 0.96;
+pub const BG_SIDEBAR: u32 = 0x121214;
+pub const BG_SIDEBAR_ALPHA: f32 = 0.88;
+pub const BG_SURFACE_TOP: u32 = 0x1E1F24;
+pub const BG_SURFACE_BOTTOM: u32 = 0x1A1B1F;
+pub const BG_SURFACE_ELEVATED: u32 = 0x23242A;
 pub const BG_INPUT: u32 = 0x141414;
 pub const BG_BADGE: u32 = 0x2A2A2A;
 
@@ -91,12 +91,13 @@ pub const G_RETURN: char = '\u{E751}';
 
 // ---- Gradients (each creates one cached D2D brush) ----------------------------------
 /// Dual-stop specular rim: catches light on the top edge, almost vanishes at the bottom.
-pub const RIM: Gradient = Gradient::new(&[(0.0, WHITE, 0.16), (0.3, WHITE, 0.05), (1.0, WHITE, 0.02)]);
-pub const RIM_HOT: Gradient = Gradient::new(&[(0.0, WHITE, 0.26), (0.3, WHITE, 0.09), (1.0, WHITE, 0.04)]);
+pub const RIM: Gradient = Gradient::new(&[(0.0, WHITE, 0.16), (0.28, WHITE, 0.07), (0.7, WHITE, 0.03), (1.0, WHITE, 0.015)]);
+pub const RIM_HOT: Gradient = Gradient::new(&[(0.0, WHITE, 0.28), (0.25, WHITE, 0.12), (0.65, WHITE, 0.05), (1.0, WHITE, 0.025)]);
 pub const RIM_ACCENT: Gradient =
-    Gradient::new(&[(0.0, ACCENT_PRIMARY_HI, 0.55), (0.4, ACCENT_PRIMARY, 0.22), (1.0, ACCENT_PRIMARY, 0.10)]);
-pub const SURFACE: Gradient = Gradient::new(&[(0.0, BG_SURFACE_TOP, 1.0), (1.0, BG_SURFACE_BOTTOM, 1.0)]);
-pub const SURFACE_ELEVATED: Gradient = Gradient::new(&[(0.0, BG_SURFACE_ELEVATED, 1.0), (1.0, 0x151925, 1.0)]);
+    Gradient::new(&[(0.0, ACCENT_PRIMARY_HI, 0.50), (0.35, ACCENT_PRIMARY, 0.22), (1.0, ACCENT_PRIMARY, 0.09)]);
+pub const SURFACE: Gradient = Gradient::new(&[(0.0, 0x202126, 1.0), (0.5, BG_SURFACE_TOP, 1.0), (1.0, BG_SURFACE_BOTTOM, 1.0)]);
+pub const SURFACE_ELEVATED: Gradient = Gradient::new(&[(0.0, 0x25262C, 1.0), (0.5, BG_SURFACE_ELEVATED, 1.0), (1.0, 0x1D1E23, 1.0)]);
+pub const GLASS_SHEEN: Gradient = Gradient::new(&[(0.0, WHITE, 0.045), (0.25, WHITE, 0.015), (0.6, WHITE, 0.003), (1.0, WHITE, 0.0)]);
 pub const SPOTLIGHT: Gradient = Gradient::new(&[(0.0, WHITE, 1.0), (0.55, WHITE, 0.35), (1.0, WHITE, 0.0)]);
 pub const DIVIDER_V: Gradient = Gradient::new(&[(0.0, WHITE, 0.0), (0.5, WHITE, 0.08), (1.0, WHITE, 0.0)]);
 pub const DIVIDER_H: Gradient = DIVIDER_V;
@@ -140,30 +141,31 @@ pub enum Surface {
     Input,
 }
 
-/// Core material: diagonal gradient body + optional cursor spotlight + dual-stop specular rim.
+/// Core material: smooth multi-stop liquid glass body + top sheen + specular rim.
 pub fn draw_specular_rounded_rect(
     cv: &mut Canvas,
     r: Rect,
     radius: f32,
     surface: Surface,
     hover: f32,
-    mouse: Option<(f32, f32)>,
+    _mouse: Option<(f32, f32)>,
 ) {
     let tl = (r.x, r.y);
     let br = (r.right(), r.bottom());
     match surface {
         Surface::Card => {
-            cv.fill_round_linear(r, radius, SURFACE, tl, br, 0.92);
+            cv.fill_round_linear(r, radius, SURFACE, tl, br, 0.90);
             if hover > 0.01 {
                 cv.fill_round_linear(r, radius, SURFACE_ELEVATED, tl, br, 0.92 * hover);
             }
         }
-        Surface::Elevated => cv.fill_round_linear(r, radius, SURFACE_ELEVATED, tl, br, 0.96),
+        Surface::Elevated => cv.fill_round_linear(r, radius, SURFACE_ELEVATED, tl, br, 0.94),
         Surface::Accent => cv.fill_round_linear(r, radius, ACCENT_TINT, tl, br, 1.0),
         Surface::Input => cv.fill_round(r, radius, BG_INPUT, 0.88),
     }
-    if let Some(m) = mouse {
-        draw_radial_spotlight(cv, r, radius, m, 0.04 + 0.03 * hover);
+    if !matches!(surface, Surface::Input) {
+        let sheen_h = (r.h * 0.55).min(120.0);
+        cv.fill_round_linear(r, radius, GLASS_SHEEN, (r.x, r.y), (r.x, r.y + sheen_h), 0.85 + 0.35 * hover);
     }
     let rim = match surface {
         Surface::Accent => RIM_ACCENT,
@@ -173,18 +175,13 @@ pub fn draw_specular_rounded_rect(
     cv.hairline_round_linear(r, radius, rim, (r.x, r.y), (r.x, r.bottom()), 1.0);
 }
 
-/// Card surface with hover tint and pointer spotlight.
+/// Card surface with hover tint.
 pub fn draw_specular_card(cv: &mut Canvas, r: Rect, radius: f32, hover: f32, mouse: Option<(f32, f32)>) {
     draw_specular_rounded_rect(cv, r, radius, Surface::Card, hover, mouse);
 }
 
-/// Pointer-following soft light (radius 180 DIP), clipped to the rounded surface.
-/// Drawn only while the pointer is over `r`, so it never costs an idle frame.
-pub fn draw_radial_spotlight(cv: &mut Canvas, r: Rect, radius: f32, mouse: (f32, f32), alpha: f32) {
-    if r.contains(mouse.0, mouse.1) {
-        cv.fill_round_radial(r, radius, SPOTLIGHT, mouse, 180.0, alpha);
-    }
-}
+/// Kept as a no-op helper for call-site compatibility (radial spotlights caused 8-bit ring banding).
+pub fn draw_radial_spotlight(_cv: &mut Canvas, _r: Rect, _radius: f32, _mouse: (f32, f32), _alpha: f32) {}
 
 /// Full-window acrylic backdrop.
 pub fn draw_window_backdrop(cv: &mut Canvas, r: Rect, rounded: bool) {
@@ -235,17 +232,10 @@ pub fn draw_progress_ring(
         return;
     }
     let sweep = 360.0 * p;
-    if glow {
-        // Fake bloom: wide translucent passes under the core stroke.
-        cv.stroke_arc(cx, cy, radius, -90.0, sweep, width * 3.2, rgb, 0.07);
-        cv.stroke_arc(cx, cy, radius, -90.0, sweep, width * 2.0, rgb, 0.12);
-    }
     cv.stroke_arc(cx, cy, radius, -90.0, sweep, width, rgb, 0.98);
     if glow && p < 0.999 {
         let a = (-90.0 + sweep).to_radians();
         let (hx, hy) = (cx + radius * a.cos(), cy + radius * a.sin());
-        let g = if rgb == ACCENT_MINT { GLOW_MINT } else if rgb == ACCENT_AMBER { GLOW_AMBER } else { GLOW_ACCENT };
-        cv.fill_circle_radial(hx, hy, width * 3.0, g, 1.0);
         cv.fill_circle(hx, hy, width * 0.42, WHITE, 0.95);
     }
 }
@@ -309,7 +299,7 @@ pub fn draw_button(cv: &mut Canvas, r: Rect, label: &str, kind: ButtonKind, hove
         ButtonKind::Primary => {
             cv.fill_round_linear(r, RADIUS_BUTTON, ACCENT_FILL, (r.x, r.y), (r.right(), r.bottom()), 0.92 + 0.08 * hover);
             cv.hairline_round_linear(r, RADIUS_BUTTON, RIM_HOT, (r.x, r.y), (r.x, r.bottom()), 1.0);
-            cv.text(label, font, r, WHITE, 1.0);
+            cv.text(label, font, r, BG_DEEP_CANVAS, 1.0);
         }
         ButtonKind::Ghost | ButtonKind::Danger => {
             cv.fill_round(r, RADIUS_BUTTON, WHITE, 0.05 + 0.07 * hover);
@@ -338,7 +328,6 @@ pub fn draw_icon_button(cv: &mut Canvas, r: Rect, glyph: char, size: f32, hover:
 pub fn draw_round_button(cv: &mut Canvas, cx: f32, cy: f32, radius: f32, glyph: char, hover: f32, primary: bool) {
     let r = Rect::new(cx - radius, cy - radius, radius * 2.0, radius * 2.0);
     if primary {
-        cv.fill_circle_radial(cx, cy, radius * 1.9, GLOW_ACCENT, 0.35 + 0.35 * hover);
         cv.fill_round_linear(r, radius, ACCENT_FILL, (r.x, r.y), (r.right(), r.bottom()), 1.0);
         cv.hairline_round_linear(r, radius, RIM_HOT, (r.x, r.y), (r.x, r.bottom()), 1.0);
         cv.glyph(glyph, radius * 0.72, r, BG_DEEP_CANVAS, 1.0);
@@ -392,7 +381,6 @@ pub fn draw_checkbox(cv: &mut Canvas, r: Rect, checked: bool, ring: u32, hover: 
     let box_r = Rect::new(cx - r.w * 0.5 * s, cy - r.h * 0.5 * s, r.w * s, r.h * s);
     let rad = RADIUS_CHECK * s;
     if checked {
-        cv.fill_circle_radial(cx, cy, r.w * 1.1, GLOW_MINT, 0.6 * (1.0 - tick * 0.5));
         cv.fill_round(box_r, rad, ACCENT_MINT, 0.95);
         let pts = [
             (cx - 4.2 * s, cy + 0.2 * s),
@@ -592,7 +580,6 @@ pub fn draw_chip(cv: &mut Canvas, r: Rect, label: &str, active: bool, hover: f32
 pub fn draw_empty_state(cv: &mut Canvas, r: Rect, title: &str, sub: &str) {
     let cx = r.x + r.w * 0.5;
     let cy = r.y + (r.h * 0.5 - 30.0).max(48.0);
-    cv.fill_circle_radial(cx, cy, 78.0, GLOW_ACCENT, 0.55);
     cv.stroke_circle(cx, cy, 44.0, 1.0, WHITE, 0.08);
     cv.stroke_arc(cx, cy, 44.0, -150.0, 120.0, 1.5, ACCENT_PRIMARY_HI, 0.6);
     cv.fill_circle(cx + 44.0 * (-30f32).to_radians().cos(), cy + 44.0 * (-30f32).to_radians().sin(), 2.5, ACCENT_PRIMARY_HI, 0.9);
