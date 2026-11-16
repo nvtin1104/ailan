@@ -357,7 +357,7 @@ impl App {
         };
         let y = match self.dock {
             ui::Dock::Top | ui::Dock::TopLeft | ui::Dock::TopRight => work.top,
-            ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => work.bottom - hpx,
+            ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => work.bottom - hpx + 1,
             ui::Dock::Left | ui::Dock::Right => {
                 let top = (cy - ph / 2).clamp(work.top, (work.bottom - ph).max(work.top));
                 top - (pill.y * self.scale_y).round() as i32
@@ -424,24 +424,70 @@ impl App {
         let Some((name, info)) = monitor_ex(mon) else { return };
         let work = info.rcWork;
         let corner = (ui::SNAP_CORNER_DIP * self.scale).round() as i32;
+        let prev_dock = self.dock;
 
-        // Pick edge/corner from cursor position, then adapt collapsed size if orientation changed.
-        let cur_pw = (self.w.value * self.scale).ceil() as i32;
-        let cur_ph = (self.h.value * self.scale_y).ceil() as i32;
-        let (dock, _, _) = ui::Dock::snap_perimeter(
-            pt.x,
-            pt.y,
-            cur_pw,
-            cur_ph,
-            (work.left, work.top, work.right, work.bottom),
-            corner,
-        );
-        if dock != self.dock {
+        // Keep corner docks sticky within a hysteresis zone so holding near a diagonal
+        // cannot oscillate between horizontal corner and vertical edge sizes.
+        let sticky = (ui::SNAP_CORNER_DIP * 2.0 * self.scale).round() as i32;
+        let keep_corner = match prev_dock {
+            ui::Dock::TopLeft => (pt.x - work.left) <= sticky && (pt.y - work.top) <= sticky,
+            ui::Dock::TopRight => (work.right - pt.x) <= sticky && (pt.y - work.top) <= sticky,
+            ui::Dock::BottomLeft => (pt.x - work.left) <= sticky && (work.bottom - pt.y) <= sticky,
+            ui::Dock::BottomRight => (work.right - pt.x) <= sticky && (work.bottom - pt.y) <= sticky,
+            _ => false,
+        };
+
+        let (base_w, base_h) = if self.expanded {
+            (self.w.target, self.h.target)
+        } else {
+            ui::collapsed_size(self.mode, self.alert_w, prev_dock)
+        };
+        let (dock, left, top, pw, ph, target_w, target_h) = if keep_corner {
+            let pw = (base_w * self.scale).ceil() as i32;
+            let ph = (base_h * self.scale_y).ceil() as i32;
+            let left = match prev_dock {
+                ui::Dock::TopLeft | ui::Dock::BottomLeft => work.left,
+                _ => (work.right - pw).max(work.left),
+            };
+            let top = match prev_dock {
+                ui::Dock::TopLeft | ui::Dock::TopRight => work.top,
+                _ => (work.bottom - ph).max(work.top),
+            };
+            (prev_dock, left, top, pw, ph, base_w, base_h)
+        } else {
+            let base_pw = (base_w * self.scale).ceil() as i32;
+            let base_ph = (base_h * self.scale_y).ceil() as i32;
+            let (dock, _, _) = ui::Dock::snap_perimeter(
+                pt.x,
+                pt.y,
+                base_pw,
+                base_ph,
+                (work.left, work.top, work.right, work.bottom),
+                corner,
+            );
+            let (target_w, target_h) = if self.expanded {
+                (self.w.target, self.h.target)
+            } else {
+                ui::collapsed_size(self.mode, self.alert_w, dock)
+            };
+            let pw = (target_w * self.scale).ceil() as i32;
+            let ph = (target_h * self.scale_y).ceil() as i32;
+            let (_, left, top) = ui::Dock::snap_perimeter(
+                pt.x,
+                pt.y,
+                pw,
+                ph,
+                (work.left, work.top, work.right, work.bottom),
+                corner,
+            );
+            (dock, left, top, pw, ph, target_w, target_h)
+        };
+
+        if dock != prev_dock {
             self.dock = dock;
             if !self.expanded {
-                let (tw, th) = ui::collapsed_size(self.mode, self.alert_w, dock);
-                self.w.set_target(tw);
-                self.h.set_target(th);
+                self.w.set_target(target_w);
+                self.h.set_target(target_h);
                 if self.state.settings.reduce_motion {
                     self.w.snap();
                     self.h.snap();
@@ -449,22 +495,6 @@ impl App {
             }
         }
 
-        let (target_w, target_h) = if self.expanded {
-            (self.w.target, self.h.target)
-        } else {
-            ui::collapsed_size(self.mode, self.alert_w, dock)
-        };
-        let pw = (target_w * self.scale).ceil() as i32;
-        let ph = (target_h * self.scale_y).ceil() as i32;
-        let (dock, left, top) = ui::Dock::snap_perimeter(
-            pt.x,
-            pt.y,
-            pw,
-            ph,
-            (work.left, work.top, work.right, work.bottom),
-            corner,
-        );
-        self.dock = dock;
         let (wpx, hpx) = self.cap_px();
         let pill = ui::pill_rect(target_w, target_h, dock);
         let x = match dock {
@@ -474,15 +504,17 @@ impl App {
         };
         let y = match dock {
             ui::Dock::Top | ui::Dock::TopLeft | ui::Dock::TopRight => work.top,
-            ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => work.bottom - hpx,
+            ui::Dock::Bottom | ui::Dock::BottomLeft | ui::Dock::BottomRight => work.bottom - hpx + 1,
             ui::Dock::Left | ui::Dock::Right => top - (pill.y * self.scale_y).round() as i32,
         };
-        unsafe {
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (x, y) != self.origin || dock != prev_dock {
+            unsafe {
+                let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            self.origin = (x, y);
+            self.region = (0, 0, 0, 0, 0, 0);
+            self.needs_draw = true;
         }
-        self.origin = (x, y);
-        self.region = (0, 0, 0, 0, 0, 0);
-        self.needs_draw = true;
 
         if save {
             let ww = (work.right - work.left).max(1) as f32;
@@ -870,9 +902,10 @@ impl App {
             self.render_hub();
             self.hub_needs_draw = false;
         }
-        let landed = self.flight.as_mut().is_some_and(|f| f.frame());
-        if landed {
-            self.on_flight_landed();
+        match self.flight.as_mut().and_then(|f| f.frame()) {
+            Some(crate::platform::flight::FlightDone::ToIsland) => self.on_flight_landed(),
+            Some(crate::platform::flight::FlightDone::FromIsland) => self.on_open_flight_landed(),
+            None => {}
         }
     }
 

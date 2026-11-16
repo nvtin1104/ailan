@@ -31,6 +31,7 @@ pub(super) struct HubWindowAnim {
     pub duration: f32,
     pub from: RECT,
     pub to: RECT,
+    pub fade_in: bool,
     pub end: HubAnimEnd,
 }
 
@@ -41,21 +42,35 @@ fn lerp_i32(a: i32, b: i32, t: f32) -> i32 {
 impl App {
     // ---- AiLan Personal Hub window ----------------------------------------------
 
+    fn island_anim_rect(&self) -> RECT {
+        let p = ui::pill_rect(self.w.value, self.h.value, self.visual_dock());
+        let ix = (self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale).round() as i32;
+        let iy = (self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale_y).round() as i32;
+        let tw = (64.0 * self.scale).round() as i32;
+        let th = (28.0 * self.scale_y).round() as i32;
+        RECT {
+            left: ix - tw / 2,
+            top: iy - th / 2,
+            right: ix + tw / 2,
+            bottom: iy + th / 2,
+        }
+    }
+
     pub fn open_hub(&mut self, page: Option<HubPage>) {
         self.hub_anim = None;
-        self.hub_ctrl.close_alpha = 1.0;
         if let Some(p) = page {
             self.hub_ctrl.select_page(p);
         }
-        self.hub_open = true;
+        let was_open = self.hub_open;
         let hs = self.hub_scale();
         let (work_w, work_h) = self.hub_work_dip(hs);
-        let base_w = if self.hub_ctrl.is_maximized {
+        let want_max = self.hub_ctrl.is_maximized;
+        let base_w = if want_max {
             self.state.settings.hub_w.unwrap_or(crate::hub::controller::FULL_WIDTH as f32)
         } else {
             self.hub_ctrl.width
         };
-        let base_h = if self.hub_ctrl.is_maximized {
+        let base_h = if want_max {
             self.state.settings.hub_h.unwrap_or(crate::hub::controller::FULL_HEIGHT as f32)
         } else {
             self.hub_ctrl.height
@@ -67,7 +82,96 @@ impl App {
         let hpx = (dip_h as f32 * hs).ceil() as i32;
 
         unsafe {
-            let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            let mon = if self.hidden {
+                MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
+            } else {
+                MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST)
+            };
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let _ = GetMonitorInfoW(mon, &mut mi);
+            let r = mi.rcWork;
+            let x = r.left + (r.right - r.left - wpx) / 2;
+            let y = r.top + ((r.bottom - r.top - hpx) / 2).max(40);
+
+            if !was_open && !self.state.settings.reduce_motion && !self.hidden {
+                let p = ui::pill_rect(self.w.value, self.h.value, self.visual_dock());
+                let start = (
+                    self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale,
+                    self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale_y,
+                );
+                let (end, target_dip) = if want_max {
+                    (
+                        ((r.left + r.right) as f32 * 0.5, (r.top + r.bottom) as f32 * 0.5),
+                        ((r.right - r.left) as f32 / hs, (r.bottom - r.top) as f32 / hs),
+                    )
+                } else {
+                    (
+                        (x as f32 + wpx as f32 * 0.5, y as f32 + hpx as f32 * 0.5),
+                        (dip_w as f32, dip_h as f32),
+                    )
+                };
+                let launched = self.flight.as_mut().is_some_and(|f| {
+                    f.launch_open(
+                        start,
+                        end,
+                        self.scale,
+                        ui::G_HOME,
+                        crate::hub::widgets::ACCENT_SKY,
+                        target_dip,
+                    )
+                });
+                if launched {
+                    let _ = SetWindowPos(self.hub_hwnd, None, x, y, wpx, hpx, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                    self.collapse();
+                    if !self.expanded {
+                        self.w.velocity += 280.0;
+                        self.h.velocity += 70.0;
+                        self.needs_draw = true;
+                    }
+                    return;
+                }
+            }
+        }
+
+        self.collapse();
+        self.reveal_hub_now();
+    }
+
+    pub(super) fn on_open_flight_landed(&mut self) {
+        self.reveal_hub_now();
+    }
+
+    fn reveal_hub_now(&mut self) {
+        self.hub_ctrl.close_alpha = 1.0;
+        self.hub_open = true;
+        let hs = self.hub_scale();
+        let (work_w, work_h) = self.hub_work_dip(hs);
+        let want_max = self.hub_ctrl.is_maximized;
+        let base_w = if want_max {
+            self.state.settings.hub_w.unwrap_or(crate::hub::controller::FULL_WIDTH as f32)
+        } else {
+            self.hub_ctrl.width
+        };
+        let base_h = if want_max {
+            self.state.settings.hub_h.unwrap_or(crate::hub::controller::FULL_HEIGHT as f32)
+        } else {
+            self.hub_ctrl.height
+        };
+        let (cw, ch) = crate::hub::controller::HubController::clamp_dip(base_w, base_h, work_w, work_h);
+        self.hub_ctrl.apply_size(cw, ch);
+        let (dip_w, dip_h) = self.hub_ctrl.target_size();
+        let wpx = (dip_w as f32 * hs).ceil() as i32;
+        let hpx = (dip_h as f32 * hs).ceil() as i32;
+
+        unsafe {
+            let mon = if self.hidden {
+                MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
+            } else {
+                MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST)
+            };
             let mut mi = MONITORINFO {
                 cbSize: std::mem::size_of::<MONITORINFO>() as u32,
                 ..Default::default()
@@ -77,8 +181,7 @@ impl App {
             let x = r.left + (r.right - r.left - wpx) / 2;
             let y = r.top + ((r.bottom - r.top - hpx) / 2).max(40);
             let _ = SetWindowPos(self.hub_hwnd, None, x, y, wpx, hpx, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-
-            if self.hub_ctrl.is_maximized {
+            if want_max {
                 crate::platform::appwindow::set_window_rounded(self.hub_hwnd, false);
                 let _ = ShowWindow(self.hub_hwnd, SW_MAXIMIZE);
             } else {
@@ -86,7 +189,7 @@ impl App {
                 let _ = ShowWindow(self.hub_hwnd, SW_SHOW);
             }
 
-            let mut rc = windows::Win32::Foundation::RECT::default();
+            let mut rc = RECT::default();
             let _ = GetClientRect(self.hub_hwnd, &mut rc);
             let cur_w = (rc.right - rc.left).max(1) as u32;
             let cur_h = (rc.bottom - rc.top).max(1) as u32;
@@ -102,6 +205,9 @@ impl App {
             }
             let _ = SetForegroundWindow(self.hub_hwnd);
             let _ = SetFocus(Some(self.hub_hwnd));
+        }
+        if !self.state.settings.reduce_motion {
+            self.hub_ctrl.restart_fade();
         }
         self.hub_needs_draw = true;
     }
@@ -226,17 +332,7 @@ impl App {
                 crate::platform::appwindow::set_window_rounded(self.hub_hwnd, true);
             }
         }
-        let p = ui::pill_rect(self.w.value, self.h.value, self.visual_dock());
-        let ix = (self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale).round() as i32;
-        let iy = (self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale_y).round() as i32;
-        let tw = (64.0 * self.scale).round() as i32;
-        let th = (28.0 * self.scale_y).round() as i32;
-        let to = RECT {
-            left: ix - tw / 2,
-            top: iy - th / 2,
-            right: ix + tw / 2,
-            bottom: iy + th / 2,
-        };
+        let to = self.island_anim_rect();
         self.hub_ctrl.focus = None;
         self.hub_ctrl.on_mouse_leave();
         self.hub_cursor = None;
@@ -245,6 +341,7 @@ impl App {
             duration: 0.20,
             from,
             to,
+            fade_in: false,
             end: HubAnimEnd::CloseToIsland,
         });
     }
@@ -253,8 +350,17 @@ impl App {
         let Some(anim) = self.hub_anim.as_ref() else { return };
         let t = (anim.start.elapsed().as_secs_f32() / anim.duration).clamp(0.0, 1.0);
         let is_close = matches!(anim.end, HubAnimEnd::CloseToIsland);
+        let is_max = matches!(anim.end, HubAnimEnd::Maximize { .. });
+        let fade_in = anim.fade_in;
         let ease = if is_close {
             t * t * (3.0 - 2.0 * t)
+        } else if fade_in {
+            // Spring-pop out of the Dynamic Island (~4.4% overshoot, then settle).
+            let u = t - 1.0;
+            let c1 = 1.1;
+            let c3 = c1 + 1.0;
+            let back = 1.0 + c3 * u * u * u + c1 * u * u;
+            if is_max { back.min(1.0) } else { back }
         } else {
             1.0 - (1.0 - t).powi(3)
         };
@@ -266,6 +372,9 @@ impl App {
         if is_close {
             self.hub_ctrl.close_alpha = (1.0 - t).powf(1.4);
             self.hub_needs_draw = true;
+        } else if fade_in {
+            self.hub_ctrl.close_alpha = (t / 0.65).clamp(0.0, 1.0).powf(0.8);
+            self.hub_needs_draw = true;
         }
 
         unsafe {
@@ -275,6 +384,9 @@ impl App {
         if t < 1.0 {
             return;
         }
+
+        self.hub_ctrl.close_alpha = 1.0;
+        self.hub_needs_draw = true;
 
         let finished = self.hub_anim.take().unwrap();
         match finished.end {
@@ -397,6 +509,7 @@ impl App {
                         duration: 0.22,
                         from,
                         to: restore_rect,
+                        fade_in: false,
                         end: HubAnimEnd::Normal,
                     });
                 } else {
@@ -409,6 +522,7 @@ impl App {
                         duration: 0.22,
                         from,
                         to,
+                        fade_in: false,
                         end: HubAnimEnd::Maximize { restore_rect: from },
                     });
                 }
@@ -453,6 +567,7 @@ impl App {
                     duration: 0.22,
                     from,
                     to,
+                    fade_in: false,
                     end: HubAnimEnd::Normal,
                 });
                 return;

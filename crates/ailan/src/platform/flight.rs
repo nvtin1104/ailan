@@ -17,7 +17,15 @@ use crate::gfx::{Gfx, Gradient, Rect};
 
 /// Flight duration in seconds.
 pub const DURATION: f32 = 0.52;
+/// Open-from-island flight duration in seconds.
+pub const OPEN_DURATION: f32 = 0.36;
 const MARGIN_DIP: f32 = 48.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlightDone {
+    ToIsland,
+    FromIsland,
+}
 
 extern "system" fn flight_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_NCHITTEST {
@@ -44,6 +52,48 @@ pub fn flight_point(start: (f32, f32), end: (f32, f32), t: f32) -> (f32, f32, f3
     (x, y, scale, alpha)
 }
 
+/// Position, size, corner radius, icon alpha and card alpha at progress `t` (0..=1)
+/// for a house tile jumping out of the Dynamic Island and expanding into the Hub window.
+pub fn open_flight_point(
+    start: (f32, f32),
+    end: (f32, f32),
+    target_dip: (f32, f32),
+    t: f32,
+) -> (f32, f32, f32, f32, f32, f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    let split = 0.50;
+    if t < split {
+        let p = (t / split).clamp(0.0, 1.0);
+        let e = 1.0 - (1.0 - p).powi(3);
+        let ctrl = (
+            start.0 + (end.0 - start.0) * 0.25,
+            start.1 + (end.1 - start.1) * 0.65,
+        );
+        let u = 1.0 - e;
+        let x = u * u * start.0 + 2.0 * u * e * ctrl.0 + e * e * end.0;
+        let y = u * u * start.1 + 2.0 * u * e * ctrl.1 + e * e * end.1;
+        let pop = 1.0 + 0.10 * (p * std::f32::consts::PI).sin();
+        let s = (28.0 + (76.0 - 28.0) * e) * pop;
+        let r = 10.0 + 12.0 * e;
+        let icon_a = (p / 0.15).clamp(0.0, 1.0);
+        (x, y, s, s, r, icon_a, 0.98)
+    } else {
+        let q = ((t - split) / (1.0 - split)).clamp(0.0, 1.0);
+        let e = 1.0 - (1.0 - q).powi(3);
+        let w = 76.0 + (target_dip.0 - 76.0) * e;
+        let h = 76.0 + (target_dip.1 - 76.0) * e;
+        let r = 22.0 + (12.0 - 22.0) * e;
+        let icon_a = (1.0 - q / 0.45).clamp(0.0, 1.0);
+        (end.0, end.1, w, h, r, icon_a, 0.98)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Mode {
+    ToIsland,
+    FromIsland { target_dip: (f32, f32) },
+}
+
 struct Run {
     /// Screen px.
     start: (f32, f32),
@@ -54,6 +104,7 @@ struct Run {
     t0: Instant,
     glyph: char,
     tint: u32,
+    mode: Mode,
 }
 
 pub struct Flight {
@@ -110,11 +161,52 @@ impl Flight {
             x1 = x1.max(x);
             y1 = y1.max(y);
         }
-        let origin = ((x0 - m).floor() as i32, (y0 - m).floor() as i32);
-        let size = (((x1 - x0) + 2.0 * m).ceil() as i32, ((y1 - y0) + 2.0 * m).ceil() as i32);
+        self.start_run(start, end, (x0 - m, y0 - m, x1 + m, y1 + m), scale, glyph, tint, Mode::ToIsland);
+    }
+
+    /// Launch a house-to-app expansion from the Dynamic Island (`start`) to the Hub center (`end`).
+    pub fn launch_open(
+        &mut self,
+        start: (f32, f32),
+        end: (f32, f32),
+        scale: f32,
+        glyph: char,
+        tint: u32,
+        target_dip: (f32, f32),
+    ) -> bool {
+        let m = 24.0 * scale;
+        let hw = target_dip.0 * 0.5 * scale;
+        let hh = target_dip.1 * 0.5 * scale;
+        let x0 = start.0.min(end.0 - hw) - m;
+        let y0 = start.1.min(end.1 - hh) - m;
+        let x1 = start.0.max(end.0 + hw) + m;
+        let y1 = start.1.max(end.1 + hh) + m;
+        self.start_run(
+            start,
+            end,
+            (x0, y0, x1, y1),
+            scale,
+            glyph,
+            tint,
+            Mode::FromIsland { target_dip },
+        )
+    }
+
+    fn start_run(
+        &mut self,
+        start: (f32, f32),
+        end: (f32, f32),
+        bounds: (f32, f32, f32, f32),
+        scale: f32,
+        glyph: char,
+        tint: u32,
+        mode: Mode,
+    ) -> bool {
+        let origin = (bounds.0.floor() as i32, bounds.1.floor() as i32);
+        let size = ((bounds.2 - bounds.0).ceil() as i32, (bounds.3 - bounds.1).ceil() as i32);
         unsafe {
             if SetWindowPos(self.hwnd, Some(HWND_TOPMOST), origin.0, origin.1, size.0, size.1, SWP_NOACTIVATE).is_err() {
-                return;
+                return false;
             }
         }
         let gfx = match self.gfx.as_mut() {
@@ -131,73 +223,129 @@ impl Flight {
             },
         };
         if !gfx {
-            return;
+            return false;
         }
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         }
-        self.run = Some(Run { start, end, origin, scale, t0: Instant::now(), glyph, tint });
+        self.run = Some(Run { start, end, origin, scale, t0: Instant::now(), glyph, tint, mode });
+        true
     }
 
-    /// Draw one frame. Returns `true` on the frame the flight lands.
-    pub fn frame(&mut self) -> bool {
-        let Some(run) = &self.run else { return false };
-        let t = run.t0.elapsed().as_secs_f32() / DURATION;
-        if t >= 1.0 {
-            self.finish();
-            return true;
-        }
-        let Some(g) = self.gfx.as_mut() else {
-            self.finish();
-            return true;
+    /// Draw one frame. Returns `Some(FlightDone)` on the frame the flight finishes.
+    pub fn frame(&mut self) -> Option<FlightDone> {
+        let run = self.run.as_ref()?;
+        let duration = match run.mode {
+            Mode::ToIsland => DURATION,
+            Mode::FromIsland { .. } => OPEN_DURATION,
         };
+        let t = run.t0.elapsed().as_secs_f32() / duration;
+        if t >= 1.0 {
+            let done = match run.mode {
+                Mode::ToIsland => FlightDone::ToIsland,
+                Mode::FromIsland { .. } => FlightDone::FromIsland,
+            };
+            self.finish();
+            return Some(done);
+        }
+        let mode = run.mode;
         let to_dip = |p: (f32, f32)| ((p.0 - run.origin.0 as f32) / run.scale, (p.1 - run.origin.1 as f32) / run.scale);
         let (s, e) = (to_dip(run.start), to_dip(run.end));
         let tint = run.tint;
         let glyph = run.glyph;
-        // Clip the window to the tile + its trail so only that small area is ever composited.
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for k in 0..=3 {
-            let (x, y, sc, _) = flight_point(s, e, (t - k as f32 * 0.045).max(0.0));
-            let r = 32.0 * sc.max(0.6);
-            x0 = x0.min(x - r);
-            y0 = y0.min(y - r);
-            x1 = x1.max(x + r);
-            y1 = y1.max(y + r);
-        }
-        let px = |v: f32| (v * run.scale).round() as i32;
-        unsafe {
-            let rgn = CreateRectRgn(px(x0), px(y0), px(x1), px(y1));
-            // The system owns the region after SetWindowRgn.
-            SetWindowRgn(self.hwnd, Some(rgn), false);
-        }
-        let glow = Gradient::new(&[(0.0, tint, 0.55), (1.0, tint, 0.0)]);
-        let result = g.draw(|cv| {
-            // Trail: fading echoes slightly behind the tile.
-            for k in (1..=3).rev() {
-                let tk = t - k as f32 * 0.045;
-                if tk <= 0.0 {
-                    continue;
-                }
-                let (x, y, sc, a) = flight_point(s, e, tk);
-                let r = 6.0 * sc * (1.0 - k as f32 * 0.22);
-                cv.fill_circle(x, y, r, tint, 0.28 * a / k as f32);
-            }
-            let (x, y, sc, a) = flight_point(s, e, t);
-            cv.alpha = a;
-            cv.fill_circle_radial(x, y, 30.0 * sc, glow, 1.0);
-            let size = 28.0 * sc;
-            let tile = Rect::new(x - size * 0.5, y - size * 0.5, size, size);
-            cv.fill_round(tile, size * 0.32, tint, 0.96);
-            cv.hairline_round(tile, size * 0.32, 0xFFFFFF, 0.35);
-            cv.glyph(glyph, 13.0 * sc, tile, 0xFFFFFF, 1.0);
-            cv.alpha = 1.0;
-        });
-        if result.is_err() {
+        let scale = run.scale;
+        let Some(g) = self.gfx.as_mut() else {
+            let done = match mode {
+                Mode::ToIsland => FlightDone::ToIsland,
+                Mode::FromIsland { .. } => FlightDone::FromIsland,
+            };
             self.finish();
-            return true;
+            return Some(done);
+        };
+        let px = |v: f32| (v * scale).round() as i32;
+        match mode {
+            Mode::ToIsland => {
+                // Clip the window to the tile + its trail so only that small area is ever composited.
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for k in 0..=3 {
+                    let (x, y, sc, _) = flight_point(s, e, (t - k as f32 * 0.045).max(0.0));
+                    let r = 32.0 * sc.max(0.6);
+                    x0 = x0.min(x - r);
+                    y0 = y0.min(y - r);
+                    x1 = x1.max(x + r);
+                    y1 = y1.max(y + r);
+                }
+                unsafe {
+                    let rgn = CreateRectRgn(px(x0), px(y0), px(x1), px(y1));
+                    SetWindowRgn(self.hwnd, Some(rgn), false);
+                }
+                let glow = Gradient::new(&[(0.0, tint, 0.55), (1.0, tint, 0.0)]);
+                let result = g.draw(|cv| {
+                    for k in (1..=3).rev() {
+                        let tk = t - k as f32 * 0.045;
+                        if tk <= 0.0 {
+                            continue;
+                        }
+                        let (x, y, sc, a) = flight_point(s, e, tk);
+                        let r = 6.0 * sc * (1.0 - k as f32 * 0.22);
+                        cv.fill_circle(x, y, r, tint, 0.28 * a / k as f32);
+                    }
+                    let (x, y, sc, a) = flight_point(s, e, t);
+                    cv.alpha = a;
+                    cv.fill_circle_radial(x, y, 30.0 * sc, glow, 1.0);
+                    let size = 28.0 * sc;
+                    let tile = Rect::new(x - size * 0.5, y - size * 0.5, size, size);
+                    cv.fill_round(tile, size * 0.32, tint, 0.96);
+                    cv.hairline_round(tile, size * 0.32, 0xFFFFFF, 0.35);
+                    cv.glyph(glyph, 13.0 * sc, tile, 0xFFFFFF, 1.0);
+                    cv.alpha = 1.0;
+                });
+                if result.is_err() {
+                    self.finish();
+                    return Some(FlightDone::ToIsland);
+                }
+            }
+            Mode::FromIsland { target_dip } => {
+                let (x, y, w, h, rad, icon_a, card_a) = open_flight_point(s, e, target_dip, t);
+                let pad = 28.0;
+                unsafe {
+                    let rgn = CreateRectRgn(
+                        px(x - w * 0.5 - pad),
+                        px(y - h * 0.5 - pad),
+                        px(x + w * 0.5 + pad),
+                        px(y + h * 0.5 + pad),
+                    );
+                    SetWindowRgn(self.hwnd, Some(rgn), false);
+                }
+                let glow = Gradient::new(&[(0.0, tint, 0.45), (1.0, tint, 0.0)]);
+                let result = g.draw(|cv| {
+                    if t < 0.55 {
+                        for k in (1..=3).rev() {
+                            let tk = (t - k as f32 * 0.035).max(0.0);
+                            if tk <= 0.0 {
+                                continue;
+                            }
+                            let (tx, ty, tw, _, _, _, _) = open_flight_point(s, e, target_dip, tk);
+                            let r = (tw * 0.22) * (1.0 - k as f32 * 0.22);
+                            cv.fill_circle(tx, ty, r, tint, 0.22 / k as f32);
+                        }
+                        cv.fill_circle_radial(x, y, (w * 0.7).max(28.0), glow, 1.0 - (t / 0.55) * 0.5);
+                    }
+                    let card = Rect::new(x - w * 0.5, y - h * 0.5, w, h);
+                    cv.fill_round(card, rad, 0x161618, card_a);
+                    cv.hairline_round(card, rad, 0xFFFFFF, 0.14);
+                    if icon_a > 0.01 {
+                        let icon_sz = (w.min(h) * 0.48).clamp(14.0, 36.0);
+                        cv.glyph(glyph, icon_sz, card, 0xFFFFFF, icon_a);
+                    }
+                });
+                if result.is_err() {
+                    self.finish();
+                    return Some(FlightDone::FromIsland);
+                }
+            }
         }
-        false
+        None
     }
 
     /// Hide the overlay and release its GPU resources.
