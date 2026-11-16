@@ -6,7 +6,7 @@ use ailan_core::time::{civil, fmt_duration};
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect};
-use super::{draw_arrow_btn, draw_status_ring, hover_amt, Action, Hit, View, G_ADD, G_DELETE, G_HOME, G_MUSIC, G_NEXT, G_PAUSE, G_PLAY, G_PREV, SURFACE, TEXT_SOFT, TODO_ROWS, WHITE};
+use super::{draw_arrow_btn, draw_audio_bars, draw_status_ring, hover_amt, Action, Hit, View, G_ADD, G_DELETE, G_HOME, G_MUSIC, G_NEXT, G_PAUSE, G_PLAY, G_PREV, SURFACE, TEXT_SOFT, TODO_ROWS, WHITE};
 
 pub(super) fn draw_expanded(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<Hit>) {
     let lang = st.lang();
@@ -109,9 +109,11 @@ fn draw_music(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<
         }
     }
 
-    cv.text(&m.title, Font::text(15.0, 600, Align::Left), Rect::new(text_x, p.y + 40.0, text_w, 20.0), WHITE, 1.0);
+    let info_w = (text_w - 30.0).max(40.0);
+    cv.text(&m.title, Font::text(15.0, 600, Align::Left), Rect::new(text_x, p.y + 40.0, info_w, 20.0), WHITE, 1.0);
     let sub = if m.artist.is_empty() { m.app.clone() } else { format!("{} · {}", m.artist, m.app) };
-    cv.text(&sub, Font::text(11.0, 400, Align::Left), Rect::new(text_x, p.y + 62.0, text_w, 16.0), TEXT_SOFT, 1.0);
+    cv.text(&sub, Font::text(11.0, 400, Align::Left), Rect::new(text_x, p.y + 62.0, info_w, 16.0), TEXT_SOFT, 1.0);
+    draw_audio_bars(cv, p.right() - 38.0, p.y + 58.0, &v.bars, 2.5, 2.5, 16.0, m.playing);
 
     let pos = if m.duration_ms > 0 { m.position_at(v.now) } else { 0 };
     let rem = (m.duration_ms - pos).max(0);

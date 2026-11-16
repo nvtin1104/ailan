@@ -126,6 +126,7 @@ pub struct App {
     /// Current `T_HUB` interval in ms (0 = off).
     hub_timer_ms: u32,
     landed_at: Option<Instant>,
+    audio_bars: [f32; 5],
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
     scale: f32,
@@ -145,6 +146,7 @@ pub struct App {
     hub_needs_draw: bool,
     hub_cursor: Option<(f32, f32)>,
     hub_mouse_inside: bool,
+    hub_anim: Option<hub_host::HubWindowAnim>,
 
     pub quit: bool,
 }
@@ -221,6 +223,7 @@ impl App {
                 .map_err(|e| log::warn!("flight overlay unavailable: {e}"))
                 .ok(),
             landed_at: None,
+            audio_bars: [0.0; 5],
             tz: Default::default(),
             hub_timer_ms: 0,
             hidden: false,
@@ -239,6 +242,7 @@ impl App {
             hub_needs_draw: false,
             hub_cursor: None,
             hub_mouse_inside: false,
+            hub_anim: None,
             quit: false,
         };
         app.place()?;
@@ -256,11 +260,13 @@ impl App {
             app.tab_pos.value = visible_index(&app.state, tab, sys::now_ms());
         }
         app.hub_ctrl.select_page(app.state.settings.hub_page);
+        app.hub_ctrl.is_maximized = app.state.settings.hub_maximized && !init.hub_compact;
         if let (Some(w), Some(h)) = (app.state.settings.hub_w, app.state.settings.hub_h) {
             app.hub_ctrl.apply_size(w, h);
         }
         if init.open_hub {
             if init.hub_compact {
+                app.hub_ctrl.is_maximized = false;
                 app.hub_ctrl.apply_size(380.0, 600.0);
             }
             app.open_hub(init.hub_page);
@@ -659,6 +665,9 @@ impl App {
         if !self.flight_active() {
             self.mode = self.state.collapsed(now);
         }
+        if let Some(a) = &self.audio {
+            a.set_spectrum_active(self.audio_visual_active());
+        }
 
         let visible = self.state.hover_activities(now);
         if !visible.is_empty() && !visible.contains(&self.tab) {
@@ -749,10 +758,63 @@ impl App {
 
     // ---- frame loop ----------------------------------------------------------------
 
+    fn audio_visual_active(&self) -> bool {
+        !self.hidden
+            && !self.state.settings.reduce_motion
+            && self.state.media.as_ref().is_some_and(|m| m.playing)
+            && ((!self.expanded && self.mode == Collapsed::Media)
+                || (self.expanded && self.tab == Tab::Music))
+    }
+
+    fn step_audio_bars(&mut self, dt: f32, now_ms: i64) {
+        let active = self.audio_visual_active();
+        if let Some(a) = &self.audio {
+            a.set_spectrum_active(active);
+        }
+        let targets: [f32; 5] = if active {
+            if let Some(bands) = self.audio.as_ref().and_then(|a| a.spectrum_bands()) {
+                bands
+            } else {
+                let (peak, [ch_l, ch_r]) = self.audio.as_ref().map(|a| a.sample_peaks()).unwrap_or((0.0, [0.0, 0.0]));
+                let t = ((now_ms.rem_euclid(600_000)) as f32) * 0.0085;
+                let boost = |v: f32| if v > 0.002 { (v * 2.6).sqrt().clamp(0.32, 1.0) } else { 0.25 };
+                let l = boost(ch_l.max(peak * 0.8));
+                let m = boost(peak);
+                let r = boost(ch_r.max(peak * 0.8));
+                let base = [l * 0.82, (l + m) * 0.5, m, (r + m) * 0.5, r * 0.82];
+                let freqs = [1.0f32, 1.45, 1.85, 1.3, 0.95];
+                let phases = [0.0f32, 1.4, 2.7, 4.1, 5.3];
+                std::array::from_fn(|i| {
+                    let wave = 0.58 + 0.42 * (t * freqs[i] + phases[i]).sin();
+                    (base[i] * wave).clamp(0.14, 1.0)
+                })
+            }
+        } else {
+            [0.0; 5]
+        };
+
+        let attack = 1.0 - (-dt * 30.0).exp();
+        let decay = 1.0 - (-dt * 14.0).exp();
+        for i in 0..5 {
+            let k = if targets[i] > self.audio_bars[i] { attack } else { decay };
+            self.audio_bars[i] += (targets[i] - self.audio_bars[i]) * k;
+        }
+    }
+
+    fn media_marquee_active(&self) -> bool {
+        !self.hidden
+            && !self.expanded
+            && !self.dock.is_vertical()
+            && self.mode == Collapsed::Media
+            && !self.state.settings.reduce_motion
+            && self.state.media.as_ref().is_some_and(|m| m.playing && m.title.chars().count() > 16)
+    }
+
     pub fn wants_frame(&self) -> bool {
         !self.quit
-            && ((!self.hidden && (self.needs_draw || !self.settled()))
+            && ((!self.hidden && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()))
                 || self.hub_needs_draw
+                || self.hub_anim.is_some()
                 || self.flight_active()
                 || (self.hub_open && self.hub_ctrl.animating()))
     }
@@ -777,18 +839,19 @@ impl App {
         if !self.wants_frame() {
             return;
         }
-        if !self.hidden && (self.needs_draw || !self.settled()) {
+        if !self.hidden && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()) {
             let now_i = Instant::now();
             let dt = now_i.duration_since(self.last_frame).as_secs_f32();
             self.last_frame = now_i;
-            let animating_before = !self.settled();
+            let animating_before = !self.settled() || self.audio_visual_active();
             let dt = if animating_before && dt < 0.1 { dt.max(1.0 / 240.0) } else { 1.0 / 60.0 };
             self.w.step(dt);
             self.h.step(dt);
             self.e.step(dt);
             self.hover_anim.step(dt);
             self.tab_pos.step(dt);
-            let animating = !self.settled();
+            self.step_audio_bars(dt, sys::now_ms());
+            let animating = !self.settled() || self.media_marquee_active() || self.audio_visual_active();
             if self.glow() <= 0.0 {
                 self.landed_at = None;
             }
@@ -801,6 +864,7 @@ impl App {
                 s.frames += 1;
             }
         }
+        self.step_hub_anim();
         if self.hub_open && (self.hub_needs_draw || self.hub_ctrl.animating()) {
             self.hub_ctrl.advance();
             self.render_hub();
@@ -837,6 +901,7 @@ impl App {
             tab_pos: self.tab_pos.value.clamp(0.0, 2.0),
             hot: self.mouse_inside,
             glow: self.glow(),
+            bars: self.audio_bars,
         };
         let state = &self.state;
         let mut hits = Vec::new();

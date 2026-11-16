@@ -421,7 +421,7 @@ impl Canvas<'_> {
         rgb: u32,
         a: f32,
     ) {
-        if let Some(path) = self.island_path(r, dock, radii, ear, true) {
+        if let Some(path) = self.island_path(r, dock, radii, ear, false) {
             self.set(rgb, a);
             unsafe { self.dc.DrawGeometry(&path, self.brush, width, None) };
         }
@@ -443,6 +443,7 @@ impl Canvas<'_> {
             let path = self.factory.CreatePathGeometry().ok()?;
             let sink = path.Open().ok()?;
             let begin = if filled { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW };
+            let pad = if filled { 2.0 } else { 0.0 };
             let x0 = r.x;
             let x1 = r.right();
             let y0 = r.y;
@@ -467,8 +468,14 @@ impl Canvas<'_> {
 
             match dock {
                 Dock::Top => {
-                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y0 }, begin);
-                    sink.AddLine(Vector2 { X: x1 + e, Y: y0 });
+                    let yt = y0 - pad;
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: x0 - e, Y: yt }, begin);
+                        sink.AddLine(Vector2 { X: x1 + e, Y: yt });
+                        sink.AddLine(Vector2 { X: x1 + e, Y: y0 });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x1 + e, Y: y0 }, begin);
+                    }
                     arc(&sink, x1, y0 + e, e, true);
                     sink.AddLine(Vector2 { X: x1, Y: y1 - br });
                     arc(&sink, x1 - br, y1, br, false);
@@ -478,7 +485,13 @@ impl Canvas<'_> {
                     arc(&sink, x0 - e, y0, e, true);
                 }
                 Dock::Bottom => {
-                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y1 }, begin);
+                    let yb = y1 + pad;
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: x0 - e, Y: yb }, begin);
+                        sink.AddLine(Vector2 { X: x0 - e, Y: y1 });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x0 - e, Y: y1 }, begin);
+                    }
                     arc(&sink, x0, y1 - e, e, true);
                     sink.AddLine(Vector2 { X: x0, Y: y0 + tl });
                     arc(&sink, x0 + tl, y0, tl, false);
@@ -486,10 +499,19 @@ impl Canvas<'_> {
                     arc(&sink, x1, y0 + tr, tr, false);
                     sink.AddLine(Vector2 { X: x1, Y: y1 - e });
                     arc(&sink, x1 + e, y1, e, true);
-                    sink.AddLine(Vector2 { X: x0 - e, Y: y1 });
+                    if filled {
+                        sink.AddLine(Vector2 { X: x1 + e, Y: yb });
+                        sink.AddLine(Vector2 { X: x0 - e, Y: yb });
+                    }
                 }
                 Dock::Left => {
-                    sink.BeginFigure(Vector2 { X: x0, Y: y0 - e }, begin);
+                    let xl = x0 - pad;
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: xl, Y: y0 - e }, begin);
+                        sink.AddLine(Vector2 { X: x0, Y: y0 - e });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x0, Y: y0 - e }, begin);
+                    }
                     arc(&sink, x0 + e, y0, e, true);
                     sink.AddLine(Vector2 { X: x1 - tr, Y: y0 });
                     arc(&sink, x1, y0 + tr, tr, false);
@@ -497,11 +519,20 @@ impl Canvas<'_> {
                     arc(&sink, x1 - br, y1, br, false);
                     sink.AddLine(Vector2 { X: x0 + e, Y: y1 });
                     arc(&sink, x0, y1 + e, e, true);
-                    sink.AddLine(Vector2 { X: x0, Y: y0 - e });
+                    if filled {
+                        sink.AddLine(Vector2 { X: xl, Y: y1 + e });
+                        sink.AddLine(Vector2 { X: xl, Y: y0 - e });
+                    }
                 }
                 Dock::Right => {
-                    sink.BeginFigure(Vector2 { X: x1, Y: y0 - e }, begin);
-                    sink.AddLine(Vector2 { X: x1, Y: y1 + e });
+                    let xr = x1 + pad;
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: xr, Y: y0 - e }, begin);
+                        sink.AddLine(Vector2 { X: xr, Y: y1 + e });
+                        sink.AddLine(Vector2 { X: x1, Y: y1 + e });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x1, Y: y1 + e }, begin);
+                    }
                     arc(&sink, x1 - e, y1, e, true);
                     sink.AddLine(Vector2 { X: x0 + bl, Y: y1 });
                     arc(&sink, x0, y1 - bl, bl, false);
@@ -511,19 +542,34 @@ impl Canvas<'_> {
                     arc(&sink, x1, y0 - e, e, true);
                 }
                 Dock::TopLeft => {
-                    sink.BeginFigure(Vector2 { X: x0, Y: y0 }, begin);
-                    sink.AddLine(Vector2 { X: x1 + e, Y: y0 });
+                    let (xl, yt) = (x0 - pad, y0 - pad);
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: xl, Y: yt }, begin);
+                        sink.AddLine(Vector2 { X: x1 + e, Y: yt });
+                        sink.AddLine(Vector2 { X: x1 + e, Y: y0 });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x1 + e, Y: y0 }, begin);
+                    }
                     arc(&sink, x1, y0 + e, e, true);
                     sink.AddLine(Vector2 { X: x1, Y: y1 - br });
                     arc(&sink, x1 - br, y1, br, false);
                     sink.AddLine(Vector2 { X: x0 + e, Y: y1 });
                     arc(&sink, x0, y1 + e, e, true);
-                    sink.AddLine(Vector2 { X: x0, Y: y0 });
+                    if filled {
+                        sink.AddLine(Vector2 { X: xl, Y: y1 + e });
+                        sink.AddLine(Vector2 { X: xl, Y: yt });
+                    }
                 }
                 Dock::TopRight => {
-                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y0 }, begin);
-                    sink.AddLine(Vector2 { X: x1, Y: y0 });
-                    sink.AddLine(Vector2 { X: x1, Y: y1 + e });
+                    let (xr, yt) = (x1 + pad, y0 - pad);
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: x0 - e, Y: yt }, begin);
+                        sink.AddLine(Vector2 { X: xr, Y: yt });
+                        sink.AddLine(Vector2 { X: xr, Y: y1 + e });
+                        sink.AddLine(Vector2 { X: x1, Y: y1 + e });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x1, Y: y1 + e }, begin);
+                    }
                     arc(&sink, x1 - e, y1, e, true);
                     sink.AddLine(Vector2 { X: x0 + bl, Y: y1 });
                     arc(&sink, x0, y1 - bl, bl, false);
@@ -531,27 +577,45 @@ impl Canvas<'_> {
                     arc(&sink, x0 - e, y0, e, true);
                 }
                 Dock::BottomLeft => {
-                    sink.BeginFigure(Vector2 { X: x0, Y: y0 - e }, begin);
+                    let (xl, yb) = (x0 - pad, y1 + pad);
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: xl, Y: y0 - e }, begin);
+                        sink.AddLine(Vector2 { X: x0, Y: y0 - e });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x0, Y: y0 - e }, begin);
+                    }
                     arc(&sink, x0 + e, y0, e, true);
                     sink.AddLine(Vector2 { X: x1 - tr, Y: y0 });
                     arc(&sink, x1, y0 + tr, tr, false);
                     sink.AddLine(Vector2 { X: x1, Y: y1 - e });
                     arc(&sink, x1 + e, y1, e, true);
-                    sink.AddLine(Vector2 { X: x0, Y: y1 });
-                    sink.AddLine(Vector2 { X: x0, Y: y0 - e });
+                    if filled {
+                        sink.AddLine(Vector2 { X: x1 + e, Y: yb });
+                        sink.AddLine(Vector2 { X: xl, Y: yb });
+                        sink.AddLine(Vector2 { X: xl, Y: y0 - e });
+                    }
                 }
                 Dock::BottomRight => {
-                    sink.BeginFigure(Vector2 { X: x0 - e, Y: y1 }, begin);
+                    let (xr, yb) = (x1 + pad, y1 + pad);
+                    if filled {
+                        sink.BeginFigure(Vector2 { X: x0 - e, Y: yb }, begin);
+                        sink.AddLine(Vector2 { X: x0 - e, Y: y1 });
+                    } else {
+                        sink.BeginFigure(Vector2 { X: x0 - e, Y: y1 }, begin);
+                    }
                     arc(&sink, x0, y1 - e, e, true);
                     sink.AddLine(Vector2 { X: x0, Y: y0 + tl });
                     arc(&sink, x0 + tl, y0, tl, false);
                     sink.AddLine(Vector2 { X: x1 - e, Y: y0 });
                     arc(&sink, x1, y0 - e, e, true);
-                    sink.AddLine(Vector2 { X: x1, Y: y1 });
-                    sink.AddLine(Vector2 { X: x0 - e, Y: y1 });
+                    if filled {
+                        sink.AddLine(Vector2 { X: xr, Y: y0 - e });
+                        sink.AddLine(Vector2 { X: xr, Y: yb });
+                        sink.AddLine(Vector2 { X: x0 - e, Y: yb });
+                    }
                 }
             }
-            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.EndFigure(if filled { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
             sink.Close().ok()?;
             Some(path)
         }

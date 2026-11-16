@@ -51,6 +51,7 @@ pub enum HubAction {
     // Window controls
     Close,
     Minimize,
+    ToggleMaximize,
     ToggleMode,
     SelectPage(HubPage),
 

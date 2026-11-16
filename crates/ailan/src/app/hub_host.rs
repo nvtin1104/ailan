@@ -1,8 +1,10 @@
 //! AiLan Personal Hub window lifecycle, action dispatch, rendering, and Win32 handle_hub.
 
+use std::time::Instant;
+
 use ailan_core::settings::HubPage;
 use ailan_core::todo::{parse_input, MAX_TEXT};
-use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{FillRect, GetMonitorInfoW, GetStockObject, MonitorFromPoint, MonitorFromWindow, RedrawWindow, ScreenToClient, BLACK_BRUSH, HBRUSH, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -18,17 +20,47 @@ use crate::ui;
 
 use super::{apply_cursor_icon, App, FLY_REMIND, FLY_TODO, T_HUB};
 
+pub(super) enum HubAnimEnd {
+    Normal,
+    Maximize { restore_rect: RECT },
+    CloseToIsland,
+}
+
+pub(super) struct HubWindowAnim {
+    pub start: Instant,
+    pub duration: f32,
+    pub from: RECT,
+    pub to: RECT,
+    pub end: HubAnimEnd,
+}
+
+fn lerp_i32(a: i32, b: i32, t: f32) -> i32 {
+    (a as f32 + (b - a) as f32 * t).round() as i32
+}
+
 impl App {
     // ---- AiLan Personal Hub window ----------------------------------------------
 
     pub fn open_hub(&mut self, page: Option<HubPage>) {
+        self.hub_anim = None;
+        self.hub_ctrl.close_alpha = 1.0;
         if let Some(p) = page {
             self.hub_ctrl.select_page(p);
         }
         self.hub_open = true;
         let hs = self.hub_scale();
         let (work_w, work_h) = self.hub_work_dip(hs);
-        let (cw, ch) = crate::hub::controller::HubController::clamp_dip(self.hub_ctrl.width, self.hub_ctrl.height, work_w, work_h);
+        let base_w = if self.hub_ctrl.is_maximized {
+            self.state.settings.hub_w.unwrap_or(crate::hub::controller::FULL_WIDTH as f32)
+        } else {
+            self.hub_ctrl.width
+        };
+        let base_h = if self.hub_ctrl.is_maximized {
+            self.state.settings.hub_h.unwrap_or(crate::hub::controller::FULL_HEIGHT as f32)
+        } else {
+            self.hub_ctrl.height
+        };
+        let (cw, ch) = crate::hub::controller::HubController::clamp_dip(base_w, base_h, work_w, work_h);
         self.hub_ctrl.apply_size(cw, ch);
         let (dip_w, dip_h) = self.hub_ctrl.target_size();
         let wpx = (dip_w as f32 * hs).ceil() as i32;
@@ -44,17 +76,30 @@ impl App {
             let r = mi.rcWork;
             let x = r.left + (r.right - r.left - wpx) / 2;
             let y = r.top + ((r.bottom - r.top - hpx) / 2).max(40);
-            let _ = SetWindowPos(self.hub_hwnd, None, x, y, wpx, hpx, SWP_SHOWWINDOW | SWP_FRAMECHANGED);
+            let _ = SetWindowPos(self.hub_hwnd, None, x, y, wpx, hpx, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
+            if self.hub_ctrl.is_maximized {
+                crate::platform::appwindow::set_window_rounded(self.hub_hwnd, false);
+                let _ = ShowWindow(self.hub_hwnd, SW_MAXIMIZE);
+            } else {
+                crate::platform::appwindow::set_window_rounded(self.hub_hwnd, true);
+                let _ = ShowWindow(self.hub_hwnd, SW_SHOW);
+            }
+
+            let mut rc = windows::Win32::Foundation::RECT::default();
+            let _ = GetClientRect(self.hub_hwnd, &mut rc);
+            let cur_w = (rc.right - rc.left).max(1) as u32;
+            let cur_h = (rc.bottom - rc.top).max(1) as u32;
+            let hs_now = self.hub_scale();
+            self.hub_ctrl.apply_size(cur_w as f32 / hs_now, cur_h as f32 / hs_now);
             match self.hub_gfx.as_mut() {
                 Some(g) => {
-                    let _ = g.resize(wpx as u32, hpx as u32, hs);
+                    let _ = g.resize(cur_w, cur_h, hs_now);
                 }
                 None => {
-                    self.hub_gfx = Gfx::new(self.hub_hwnd, wpx as u32, hpx as u32, hs).ok();
+                    self.hub_gfx = Gfx::new(self.hub_hwnd, cur_w, cur_h, hs_now).ok();
                 }
             }
-            let _ = ShowWindow(self.hub_hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hub_hwnd);
             let _ = SetFocus(Some(self.hub_hwnd));
         }
@@ -77,8 +122,11 @@ impl App {
     }
 
     fn persist_hub_geometry(&mut self) {
-        self.state.settings.hub_w = Some(self.hub_ctrl.width);
-        self.state.settings.hub_h = Some(self.hub_ctrl.height);
+        self.state.settings.hub_maximized = self.hub_ctrl.is_maximized;
+        if !self.hub_ctrl.is_maximized {
+            self.state.settings.hub_w = Some(self.hub_ctrl.width);
+            self.state.settings.hub_h = Some(self.hub_ctrl.height);
+        }
         self.state.settings.hub_page = self.hub_ctrl.active_page;
         self.state.mark_settings_dirty(sys::now_ms());
     }
@@ -105,20 +153,157 @@ impl App {
         self.hub_needs_draw = true;
     }
 
+    fn hub_monitor_work_rect(&self) -> RECT {
+        unsafe {
+            let mon = MonitorFromWindow(self.hub_hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let _ = GetMonitorInfoW(mon, &mut mi);
+            mi.rcWork
+        }
+    }
+
+    fn hub_centered_rect(&self, from: RECT, dip_w: i32, dip_h: i32) -> RECT {
+        let hs = self.hub_scale();
+        let wpx = (dip_w as f32 * hs).ceil() as i32;
+        let hpx = (dip_h as f32 * hs).ceil() as i32;
+        let work = self.hub_monitor_work_rect();
+        let w = wpx.min(work.right - work.left).max(1);
+        let h = hpx.min(work.bottom - work.top).max(1);
+        let cx = from.left + (from.right - from.left) / 2;
+        let cy = from.top + (from.bottom - from.top) / 2;
+        let x = (cx - w / 2).clamp(work.left, (work.right - w).max(work.left));
+        let y = (cy - h / 2).clamp(work.top, (work.bottom - h).max(work.top));
+        RECT { left: x, top: y, right: x + w, bottom: y + h }
+    }
+
+    fn finish_close_hub(&mut self) {
+        self.hub_anim = None;
+        self.hub_open = false;
+        self.hub_ctrl.close_alpha = 1.0;
+        self.hub_ctrl.focus = None;
+        self.hub_ctrl.on_mouse_leave();
+        self.hub_cursor = None;
+        unsafe {
+            let _ = ShowWindow(self.hub_hwnd, SW_HIDE);
+        }
+        // Drop the whole D3D/D2D/DComp stack (brushes, gradients, text formats) while
+        // hidden; it is rebuilt on the next open.
+        self.hub_gfx = None;
+        self.sync_hub_timer();
+        self.save(true);
+    }
+
     pub fn close_hub(&mut self) {
-        if self.hub_open {
-            self.hub_open = false;
-            self.hub_ctrl.focus = None;
-            self.hub_ctrl.on_mouse_leave();
-            self.hub_cursor = None;
-            unsafe {
-                let _ = ShowWindow(self.hub_hwnd, SW_HIDE);
+        if !self.hub_open {
+            return;
+        }
+        if self.state.settings.reduce_motion || self.hidden {
+            self.finish_close_hub();
+            return;
+        }
+        if matches!(self.hub_anim.as_ref().map(|a| &a.end), Some(HubAnimEnd::CloseToIsland)) {
+            return;
+        }
+        self.persist_hub_geometry();
+        let mut from = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hub_hwnd, &mut from);
+            if IsZoomed(self.hub_hwnd).as_bool() {
+                let _ = ShowWindow(self.hub_hwnd, SW_RESTORE);
+                let _ = SetWindowPos(
+                    self.hub_hwnd,
+                    None,
+                    from.left,
+                    from.top,
+                    from.right - from.left,
+                    from.bottom - from.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                self.hub_ctrl.is_maximized = false;
+                crate::platform::appwindow::set_window_rounded(self.hub_hwnd, true);
             }
-            // Drop the whole D3D/D2D/DComp stack (brushes, gradients, text formats) while
-            // hidden; it is rebuilt on the next open.
-            self.hub_gfx = None;
-            self.sync_hub_timer();
-            self.save(true);
+        }
+        let p = ui::pill_rect(self.w.value, self.h.value, self.visual_dock());
+        let ix = (self.origin.0 as f32 + (p.x + p.w * 0.5) * self.scale).round() as i32;
+        let iy = (self.origin.1 as f32 + (p.y + p.h * 0.5) * self.scale_y).round() as i32;
+        let tw = (64.0 * self.scale).round() as i32;
+        let th = (28.0 * self.scale_y).round() as i32;
+        let to = RECT {
+            left: ix - tw / 2,
+            top: iy - th / 2,
+            right: ix + tw / 2,
+            bottom: iy + th / 2,
+        };
+        self.hub_ctrl.focus = None;
+        self.hub_ctrl.on_mouse_leave();
+        self.hub_cursor = None;
+        self.hub_anim = Some(HubWindowAnim {
+            start: Instant::now(),
+            duration: 0.20,
+            from,
+            to,
+            end: HubAnimEnd::CloseToIsland,
+        });
+    }
+
+    pub(super) fn step_hub_anim(&mut self) {
+        let Some(anim) = self.hub_anim.as_ref() else { return };
+        let t = (anim.start.elapsed().as_secs_f32() / anim.duration).clamp(0.0, 1.0);
+        let is_close = matches!(anim.end, HubAnimEnd::CloseToIsland);
+        let ease = if is_close {
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            1.0 - (1.0 - t).powi(3)
+        };
+        let x = lerp_i32(anim.from.left, anim.to.left, ease);
+        let y = lerp_i32(anim.from.top, anim.to.top, ease);
+        let w = lerp_i32(anim.from.right - anim.from.left, anim.to.right - anim.to.left, ease).max(1);
+        let h = lerp_i32(anim.from.bottom - anim.from.top, anim.to.bottom - anim.to.top, ease).max(1);
+
+        if is_close {
+            self.hub_ctrl.close_alpha = (1.0 - t).powf(1.4);
+            self.hub_needs_draw = true;
+        }
+
+        unsafe {
+            let _ = SetWindowPos(self.hub_hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        if t < 1.0 {
+            return;
+        }
+
+        let finished = self.hub_anim.take().unwrap();
+        match finished.end {
+            HubAnimEnd::Normal => {
+                self.persist_hub_geometry();
+            }
+            HubAnimEnd::Maximize { restore_rect } => {
+                unsafe {
+                    let mut wp = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    if GetWindowPlacement(self.hub_hwnd, &mut wp).is_ok() {
+                        wp.rcNormalPosition = restore_rect;
+                        let _ = SetWindowPlacement(self.hub_hwnd, &wp);
+                    }
+                    let _ = ShowWindow(self.hub_hwnd, SW_MAXIMIZE);
+                }
+                self.persist_hub_geometry();
+            }
+            HubAnimEnd::CloseToIsland => {
+                self.finish_close_hub();
+                if !self.expanded && !self.hidden {
+                    self.w.velocity += 280.0;
+                    self.h.velocity += 60.0;
+                    self.landed_at = Some(Instant::now());
+                    self.needs_draw = true;
+                }
+            }
         }
     }
 
@@ -162,10 +347,114 @@ impl App {
                 let _ = ShowWindow(self.hub_hwnd, SW_MINIMIZE);
                 return;
             },
+            HubAction::ToggleMaximize => {
+                if self.state.settings.reduce_motion {
+                    unsafe {
+                        let cmd = if IsZoomed(self.hub_hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
+                        let _ = ShowWindow(self.hub_hwnd, cmd);
+                    }
+                    self.persist_hub_geometry();
+                    return;
+                }
+                let mut from = RECT::default();
+                unsafe {
+                    let _ = GetWindowRect(self.hub_hwnd, &mut from);
+                }
+                if unsafe { IsZoomed(self.hub_hwnd).as_bool() } {
+                    let mut wp = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    let restore_rect = unsafe {
+                        if GetWindowPlacement(self.hub_hwnd, &mut wp).is_ok()
+                            && wp.rcNormalPosition.right > wp.rcNormalPosition.left
+                            && wp.rcNormalPosition.bottom > wp.rcNormalPosition.top
+                        {
+                            wp.rcNormalPosition
+                        } else {
+                            let dw = self.state.settings.hub_w.unwrap_or(crate::hub::controller::FULL_WIDTH as f32).round() as i32;
+                            let dh = self.state.settings.hub_h.unwrap_or(crate::hub::controller::FULL_HEIGHT as f32).round() as i32;
+                            self.hub_centered_rect(from, dw, dh)
+                        }
+                    };
+                    unsafe {
+                        let _ = ShowWindow(self.hub_hwnd, SW_RESTORE);
+                        let _ = SetWindowPos(
+                            self.hub_hwnd,
+                            None,
+                            from.left,
+                            from.top,
+                            from.right - from.left,
+                            from.bottom - from.top,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    self.hub_ctrl.is_maximized = false;
+                    crate::platform::appwindow::set_window_rounded(self.hub_hwnd, true);
+                    self.hub_ctrl.restart_fade();
+                    self.hub_anim = Some(HubWindowAnim {
+                        start: Instant::now(),
+                        duration: 0.22,
+                        from,
+                        to: restore_rect,
+                        end: HubAnimEnd::Normal,
+                    });
+                } else {
+                    let to = self.hub_monitor_work_rect();
+                    self.hub_ctrl.is_maximized = true;
+                    crate::platform::appwindow::set_window_rounded(self.hub_hwnd, false);
+                    self.hub_ctrl.restart_fade();
+                    self.hub_anim = Some(HubWindowAnim {
+                        start: Instant::now(),
+                        duration: 0.22,
+                        from,
+                        to,
+                        end: HubAnimEnd::Maximize { restore_rect: from },
+                    });
+                }
+                return;
+            }
             HubAction::ToggleMode => {
-                let (w, h) = self.hub_ctrl.toggle_mode();
-                self.resize_hub(w, h);
-                self.persist_hub_geometry();
+                if self.state.settings.reduce_motion {
+                    if unsafe { IsZoomed(self.hub_hwnd).as_bool() } {
+                        unsafe {
+                            let _ = ShowWindow(self.hub_hwnd, SW_RESTORE);
+                        }
+                        self.hub_ctrl.is_maximized = false;
+                        crate::platform::appwindow::set_window_rounded(self.hub_hwnd, true);
+                    }
+                    let (w, h) = self.hub_ctrl.toggle_mode();
+                    self.resize_hub(w, h);
+                    self.persist_hub_geometry();
+                    return;
+                }
+                let mut from = RECT::default();
+                unsafe {
+                    let _ = GetWindowRect(self.hub_hwnd, &mut from);
+                    if IsZoomed(self.hub_hwnd).as_bool() {
+                        let _ = ShowWindow(self.hub_hwnd, SW_RESTORE);
+                        let _ = SetWindowPos(
+                            self.hub_hwnd,
+                            None,
+                            from.left,
+                            from.top,
+                            from.right - from.left,
+                            from.bottom - from.top,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                        self.hub_ctrl.is_maximized = false;
+                        crate::platform::appwindow::set_window_rounded(self.hub_hwnd, true);
+                    }
+                }
+                let (dip_w, dip_h) = self.hub_ctrl.toggle_mode();
+                let to = self.hub_centered_rect(from, dip_w, dip_h);
+                self.hub_anim = Some(HubWindowAnim {
+                    start: Instant::now(),
+                    duration: 0.22,
+                    from,
+                    to,
+                    end: HubAnimEnd::Normal,
+                });
                 return;
             }
             HubAction::SelectPage(page) => {
@@ -468,7 +757,38 @@ impl App {
                 // the entire window frame without Windows default non-client borders.
                 return Some(LRESULT(0));
             }
+            WM_GETMINMAXINFO => {
+                let mmi = lparam.0 as *mut MINMAXINFO;
+                if !mmi.is_null() {
+                    unsafe {
+                        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        let mut mi = MONITORINFO {
+                            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                            ..Default::default()
+                        };
+                        if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                            let rc_work = mi.rcWork;
+                            let rc_mon = mi.rcMonitor;
+                            (*mmi).ptMaxPosition.x = rc_work.left - rc_mon.left;
+                            (*mmi).ptMaxPosition.y = rc_work.top - rc_mon.top;
+                            (*mmi).ptMaxSize.x = rc_work.right - rc_work.left;
+                            (*mmi).ptMaxSize.y = rc_work.bottom - rc_work.top;
+                        }
+                        if matches!(self.hub_anim.as_ref().map(|a| &a.end), Some(HubAnimEnd::CloseToIsland)) {
+                            (*mmi).ptMinTrackSize.x = 1;
+                            (*mmi).ptMinTrackSize.y = 1;
+                        } else {
+                            (*mmi).ptMinTrackSize.x = (crate::hub::controller::HUB_MIN_W * hs).round() as i32;
+                            (*mmi).ptMinTrackSize.y = (crate::hub::controller::HUB_MIN_H * hs).round() as i32;
+                        }
+                    }
+                }
+                return Some(LRESULT(0));
+            }
             WM_SIZING => {
+                if self.hub_ctrl.is_maximized {
+                    return Some(LRESULT(0));
+                }
                 let rect = lparam.0 as *mut windows::Win32::Foundation::RECT;
                 if !rect.is_null() {
                     unsafe {
@@ -495,6 +815,11 @@ impl App {
             }
             WM_SIZE => {
                 if wparam.0 != SIZE_MINIMIZED as usize {
+                    let zoomed = wparam.0 == SIZE_MAXIMIZED as usize;
+                    if self.hub_ctrl.is_maximized != zoomed {
+                        self.hub_ctrl.is_maximized = zoomed;
+                        crate::platform::appwindow::set_window_rounded(hwnd, !zoomed);
+                    }
                     let w = (lparam.0 & 0xFFFF) as u32 as f32 / hs;
                     let h = ((lparam.0 >> 16) & 0xFFFF) as u32 as f32 / hs;
                     if w > 8.0 && h > 8.0 {
@@ -517,6 +842,10 @@ impl App {
                 }
                 let x = pt.x as f32 / hs;
                 let y = pt.y as f32 / hs;
+                if self.hub_ctrl.is_maximized {
+                    let hit = if self.hub_ctrl.is_caption(x, y) { HTCAPTION } else { HTCLIENT };
+                    return Some(LRESULT(hit as isize));
+                }
                 let b = 6.0;
                 let w = self.hub_ctrl.width;
                 let h = self.hub_ctrl.height;

@@ -59,6 +59,8 @@ pub struct Settings {
     /// Hub client size in DIP. `None` = 1000×680.
     pub hub_w: Option<f32>,
     pub hub_h: Option<f32>,
+    /// Whether the Hub window was last maximized.
+    pub hub_maximized: bool,
     /// Hub page restored on the next open.
     pub hub_page: HubPage,
 }
@@ -85,6 +87,7 @@ impl Default for Settings {
             anchor_y: None,
             hub_w: None,
             hub_h: None,
+            hub_maximized: false,
             hub_page: HubPage::Today,
         }
     }

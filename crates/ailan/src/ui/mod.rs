@@ -165,6 +165,7 @@ pub fn collapsed_size(mode: Collapsed, alert_w: f32, dock: Dock) -> (f32, f32) {
     match mode {
         Collapsed::Osd | Collapsed::Banner => (alert_w.clamp(ALERT_MIN_W, ALERT_MAX_W), ALERT_H),
         _ if dock.is_vertical() => (VERT_W, VERT_H),
+        Collapsed::Media => (190.0, REST_H),
         _ => (REST_W, REST_H),
     }
 }
@@ -207,12 +208,12 @@ pub fn ear_for(_dock: Dock) -> f32 {
 pub fn pill_rect(w: f32, h: f32, dock: Dock) -> Rect {
     let x = match dock {
         Dock::Left | Dock::TopLeft | Dock::BottomLeft => 0.0,
-        Dock::Right | Dock::TopRight | Dock::BottomRight => (WIN_W - w).round(),
+        Dock::Right | Dock::TopRight | Dock::BottomRight => WIN_W - w,
         Dock::Top | Dock::Bottom => ((WIN_W - w) / 2.0).round(),
     };
     let y = match dock {
         Dock::Top | Dock::TopLeft | Dock::TopRight => 0.0,
-        Dock::Bottom | Dock::BottomLeft | Dock::BottomRight => (WIN_H - h).round(),
+        Dock::Bottom | Dock::BottomLeft | Dock::BottomRight => WIN_H - h,
         Dock::Left | Dock::Right => ((WIN_H - h) / 2.0).round(),
     };
     Rect::new(x, y, w, h)
@@ -284,6 +285,19 @@ pub struct View<'a> {
     pub hot: bool,
     /// 1 → 0 glow right after something flew into the island.
     pub glow: f32,
+    /// Real-time audio-reactive equalizer bar levels (0..=1).
+    pub bars: [f32; 5],
+}
+
+pub(super) fn draw_audio_bars(cv: &mut Canvas, x: f32, cy: f32, bars: &[f32], bar_w: f32, gap: f32, max_h: f32, playing: bool) {
+    let alpha = if playing { 0.92 } else { 0.35 };
+    for (i, &lvl) in bars.iter().enumerate() {
+        let level = if playing { lvl.clamp(0.12, 1.0) } else { 0.16 };
+        let h = (3.0 + level * (max_h - 3.0)).max(3.0);
+        let bx = x + i as f32 * (bar_w + gap);
+        let by = cy - h * 0.5;
+        cv.fill_round(Rect::new(bx, by, bar_w, h), bar_w * 0.5, WHITE, alpha);
+    }
 }
 
 pub(super) fn hover_amt(_v: &View, _action: Action) -> f32 {

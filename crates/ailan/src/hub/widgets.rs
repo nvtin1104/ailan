@@ -78,6 +78,8 @@ pub const G_SEARCH: char = '\u{E721}';
 pub const G_FULLSCREEN: char = '\u{E740}';
 pub const G_BACK_TO_WINDOW: char = '\u{E73F}';
 pub const G_CHROME_MIN: char = '\u{E921}';
+pub const G_CHROME_MAX: char = '\u{E922}';
+pub const G_CHROME_RESTORE: char = '\u{E923}';
 pub const G_CHROME_CLOSE: char = '\u{E8BB}';
 pub const G_LIST: char = '\u{E8FD}';
 pub const G_CALENDAR: char = '\u{E787}';
@@ -185,10 +187,12 @@ pub fn draw_radial_spotlight(cv: &mut Canvas, r: Rect, radius: f32, mouse: (f32,
 }
 
 /// Full-window acrylic backdrop.
-pub fn draw_window_backdrop(cv: &mut Canvas, r: Rect) {
+pub fn draw_window_backdrop(cv: &mut Canvas, r: Rect, rounded: bool) {
     // Fill the full rect: DWM rounds (and anti-aliases) the window corners itself.
     cv.fill_rect(r, BG_DEEP_CANVAS, BG_DEEP_CANVAS_ALPHA);
-    cv.hairline_round_linear(r, RADIUS_WINDOW, RIM, (r.x, r.y), (r.x, r.y + r.h.min(260.0)), 1.0);
+    if rounded {
+        cv.hairline_round_linear(r, RADIUS_WINDOW, RIM, (r.x, r.y), (r.x, r.y + r.h.min(260.0)), 1.0);
+    }
 }
 
 /// Legacy: window panel (now the deep canvas material).
@@ -345,13 +349,19 @@ pub fn draw_round_button(cv: &mut Canvas, cx: f32, cy: f32, radius: f32, glyph: 
     }
 }
 
-/// Window chrome: minimize / compact↔full / close. `hover` = index 0..3 of the hovered one.
-pub fn draw_window_controls(cv: &mut Canvas, rects: [Rect; 3], hover: Option<usize>, is_compact: bool) {
-    let glyphs = [G_CHROME_MIN, if is_compact { G_FULLSCREEN } else { G_BACK_TO_WINDOW }, G_CHROME_CLOSE];
+/// Window chrome: compact↔normal / minimize / maximize↔restore / close.
+/// `hover` = index 0..4 of the hovered button.
+pub fn draw_window_controls(cv: &mut Canvas, rects: [Rect; 4], hover: Option<usize>, is_compact: bool, is_maximized: bool) {
+    let glyphs = [
+        if is_compact { G_FULLSCREEN } else { G_BACK_TO_WINDOW },
+        G_CHROME_MIN,
+        if is_maximized { G_CHROME_RESTORE } else { G_CHROME_MAX },
+        G_CHROME_CLOSE,
+    ];
     for (i, r) in rects.iter().enumerate() {
         let h = hover == Some(i);
         if h {
-            let (rgb, a) = if i == 2 { (0xE81123, 0.92) } else { (WHITE, 0.09) };
+            let (rgb, a) = if i == 3 { (0xE81123, 0.92) } else { (WHITE, 0.09) };
             cv.fill_round(*r, RADIUS_BUTTON, rgb, a);
         }
         let fg = if h { TEXT_HERO } else { TEXT_BODY };
@@ -359,28 +369,18 @@ pub fn draw_window_controls(cv: &mut Canvas, rects: [Rect; 3], hover: Option<usi
     }
 }
 
-/// Legacy titlebar signature retained for older call sites.
-pub fn draw_titlebar_controls(cv: &mut Canvas, r: Rect, hover_close: bool, hover_min: bool, hover_mode: bool, is_compact: bool) {
-    let rects = window_control_rects(r.right(), r.y);
-    let hover = if hover_min {
-        Some(0)
-    } else if hover_mode {
-        Some(1)
-    } else if hover_close {
-        Some(2)
-    } else {
-        None
-    };
-    draw_window_controls(cv, rects, hover, is_compact);
-}
-
-/// `[minimize, mode, close]` rects for a titlebar ending at `right`.
-pub fn window_control_rects(right: f32, top: f32) -> [Rect; 3] {
-    let (w, h, y) = (38.0, 28.0, top + 8.0);
+/// `[compact↔normal, minimize, maximize↔restore, close]` rects for a titlebar ending at `right`.
+pub fn window_control_rects(right: f32, top: f32) -> [Rect; 4] {
+    let (w, h, gap, y) = (34.0, 28.0, 2.0, top + 8.0);
+    let x3 = right - 8.0 - w;
+    let x2 = x3 - w - gap;
+    let x1 = x2 - w - gap;
+    let x0 = x1 - w - gap;
     [
-        Rect::new(right - 8.0 - w * 3.0 - 8.0, y, w, h),
-        Rect::new(right - 8.0 - w * 2.0 - 4.0, y, w, h),
-        Rect::new(right - 8.0 - w, y, w, h),
+        Rect::new(x0, y, w, h),
+        Rect::new(x1, y, w, h),
+        Rect::new(x2, y, w, h),
+        Rect::new(x3, y, w, h),
     ]
 }
 

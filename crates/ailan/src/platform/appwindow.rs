@@ -12,7 +12,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-// DWMWCP_ROUND = 2
+// DWMWCP_DONOTROUND = 1, DWMWCP_ROUND = 2
+const DWMWCP_DONOTROUND: u32 = 1;
 const DWMWCP_ROUND: u32 = 2;
 // DWMWA_SYSTEMBACKDROP_TYPE = 38
 const DWMWA_SYSTEMBACKDROP_TYPE: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(38);
@@ -74,6 +75,18 @@ pub fn create_app_window(wndproc: WNDPROC) -> Result<HWND> {
     }
 }
 
+pub fn set_window_rounded(hwnd: HWND, rounded: bool) {
+    let pref = if rounded { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &pref as *const _ as _,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
 pub fn apply_modern_window_styling(hwnd: HWND) {
     unsafe {
         // 1. Dark mode titlebar & frame
@@ -86,13 +99,7 @@ pub fn apply_modern_window_styling(hwnd: HWND) {
         );
 
         // 2. Windows 11 Rounded Corners (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
-        let round = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &round as *const _ as _,
-            std::mem::size_of::<u32>() as u32,
-        );
+        set_window_rounded(hwnd, true);
 
         // 3. Liquid Glass Acrylic backdrop (Windows 11 22621+) with Mica fallback (22000)
         let backdrop = DWMSBT_TRANSIENTWINDOW;

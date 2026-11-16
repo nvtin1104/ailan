@@ -24,8 +24,6 @@ pub const FULL_WIDTH: i32 = 1000;
 pub const FULL_HEIGHT: i32 = 680;
 pub const HUB_MIN_W: f32 = 380.0;
 pub const HUB_MIN_H: f32 = 520.0;
-pub const HUB_MAX_W: f32 = 1280.0;
-pub const HUB_MAX_H: f32 = 900.0;
 pub const HUB_DOCK_BREAK: f32 = 640.0;
 
 pub const TITLE_H: f32 = 44.0;
@@ -59,6 +57,8 @@ pub struct HubController {
     pub width: f32,
     pub height: f32,
     pub is_compact: bool,
+    pub is_maximized: bool,
+    pub close_alpha: f32,
     pub hover: Option<HubAction>,
     pub mouse: Option<(f32, f32)>,
     pub focus: Option<Field>,
@@ -103,6 +103,8 @@ impl HubController {
             width: FULL_WIDTH as f32,
             height: FULL_HEIGHT as f32,
             is_compact: false,
+            is_maximized: false,
+            close_alpha: 1.0,
             hover: None,
             mouse: None,
             focus: None,
@@ -131,8 +133,8 @@ impl HubController {
     }
 
     pub fn clamp_dip(w: f32, h: f32, work_w: f32, work_h: f32) -> (f32, f32) {
-        let max_w = HUB_MAX_W.min(work_w * 0.9).max(HUB_MIN_W);
-        let max_h = HUB_MAX_H.min(work_h * 0.9).max(HUB_MIN_H);
+        let max_w = work_w.max(HUB_MIN_W);
+        let max_h = work_h.max(HUB_MIN_H);
         (w.clamp(HUB_MIN_W, max_w), h.clamp(HUB_MIN_H, max_h))
     }
 
@@ -196,7 +198,7 @@ impl HubController {
         }
     }
 
-    fn restart_fade(&mut self) {
+    pub fn restart_fade(&mut self) {
         if !self.reduce_motion {
             self.fade.value = 0.0;
             self.fade.velocity = 0.0;
@@ -384,13 +386,16 @@ impl HubController {
         self.reduce_motion = st.settings.reduce_motion;
         self.hits.clear();
         self.spots.clear();
-        draw_window_backdrop(cv, Rect::new(0.0, 0.0, w, h));
+        let prev_alpha = cv.alpha;
+        cv.alpha *= self.close_alpha.clamp(0.0, 1.0);
+        draw_window_backdrop(cv, Rect::new(0.0, 0.0, w, h), !self.is_maximized);
         let counts = NavCounts::of(st, now);
         if self.is_compact {
             self.draw_compact(cv, st, now, w, h, &counts);
         } else {
             self.draw_full(cv, st, now, w, h, &counts);
         }
+        cv.alpha = prev_alpha;
     }
 
     fn hover_t(&self, a: HubAction) -> f32 {
@@ -428,9 +433,9 @@ impl HubController {
         self.push_hit(bar, act);
 
         let rects = window_control_rects(w, 0.0);
-        let acts = [HubAction::Minimize, HubAction::ToggleMode, HubAction::Close];
+        let acts = [HubAction::ToggleMode, HubAction::Minimize, HubAction::ToggleMaximize, HubAction::Close];
         let hover_idx = acts.iter().position(|a| self.hover == Some(*a));
-        draw_window_controls(cv, rects, hover_idx, self.is_compact);
+        draw_window_controls(cv, rects, hover_idx, self.is_compact, self.is_maximized);
         for (r, a) in rects.iter().zip(acts) {
             self.push_hit(*r, a);
         }
@@ -492,8 +497,9 @@ impl HubController {
         self.draw_mini_dock(cv, st, dock);
 
         // Titlebar over the content column; command bar centred on the window.
-        let bar_w = 380.0f32.min(w - SIDEBAR_W - 160.0);
-        let bar = Rect::new(((w - bar_w) * 0.5).max(SIDEBAR_W + 16.0), 8.0, bar_w, 28.0);
+        let bar_w = 380.0f32.min((w - SIDEBAR_W - 180.0).max(120.0));
+        let bar_x = ((w - bar_w) * 0.5).max(SIDEBAR_W + 16.0).min(w - 160.0 - bar_w);
+        let bar = Rect::new(bar_x, 8.0, bar_w, 28.0);
         self.draw_titlebar(cv, st, w, bar);
 
         let content = Rect::new(SIDEBAR_W + 28.0, TITLE_H + 12.0, w - SIDEBAR_W - 56.0, h - TITLE_H - 12.0 - 20.0);
@@ -505,7 +511,7 @@ impl HubController {
         draw_app_logo(cv, tile);
         cv.text("AiLan", Font::text(13.5, 700, Align::Left), Rect::new(42.0, 10.0, 60.0, 24.0), TEXT_HERO, 1.0);
 
-        let bar = Rect::new(100.0, 8.0, (w - 100.0 - 140.0).max(60.0), 28.0);
+        let bar = Rect::new(100.0, 8.0, (w - 100.0 - 160.0).max(60.0), 28.0);
         self.draw_titlebar(cv, st, w, bar);
 
         // Floating glass dock spanning the window width (minus the 16px gutters).

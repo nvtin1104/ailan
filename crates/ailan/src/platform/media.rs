@@ -80,6 +80,13 @@ fn run(sink: EventSink, tx: Sender<Msg>, rx: Receiver<Msg>) -> Result<()> {
             Ok(())
         }))?;
     }
+    {
+        let tx = tx.clone();
+        let _ = manager.SessionsChanged(&TypedEventHandler::new(move |_, _| {
+            let _ = tx.send(Msg::SessionChanged);
+            Ok(())
+        }));
+    }
 
     let mut bound: Option<Bound> = None;
     let mut last_info: Option<MediaInfo> = None;
@@ -120,7 +127,7 @@ fn run(sink: EventSink, tx: Sender<Msg>, rx: Receiver<Msg>) -> Result<()> {
                 let _ = old.session.RemovePlaybackInfoChanged(old.tokens[1]);
                 let _ = old.session.RemoveTimelinePropertiesChanged(old.tokens[2]);
             }
-            bound = manager.GetCurrentSession().ok().and_then(|s| bind(s, &tx).ok());
+            bound = pick_session(&manager).and_then(|s| bind(s, &tx).ok());
             refresh = true;
         }
 
@@ -212,6 +219,114 @@ fn read(session: &Session) -> Result<MediaInfo> {
     Ok(MediaInfo { title, artist, app, playing, position_ms, duration_ms, sampled_at, track_key })
 }
 
+fn pick_session(manager: &Manager) -> Option<Session> {
+    if let Ok(cur) = manager.GetCurrentSession() {
+        if is_allowed_session(&cur) {
+            return Some(cur);
+        }
+    }
+    let Ok(sessions) = manager.GetSessions() else { return None };
+    let mut fallback: Option<Session> = None;
+    for s in sessions {
+        if !is_allowed_session(&s) {
+            continue;
+        }
+        let playing = s.GetPlaybackInfo().and_then(|p| p.PlaybackStatus()).ok() == Some(Status::Playing);
+        if playing {
+            return Some(s);
+        }
+        if fallback.is_none() {
+            fallback = Some(s);
+        }
+    }
+    fallback
+}
+
+fn is_allowed_session(session: &Session) -> bool {
+    session
+        .SourceAppUserModelId()
+        .ok()
+        .is_some_and(|aumid| is_allowed_media_app(&aumid.to_string()))
+}
+
+const ALLOWED_MEDIA_TOKENS: &[&str] = &[
+    // Official music & media players
+    "spotify",
+    "spotifymusic",
+    "spotifyab",
+    "applemusic",
+    "applemusicwin",
+    "itunes",
+    "cider",
+    "youtubemusic",
+    "ytmusic",
+    "tidal",
+    "deezer",
+    "amazonmusic",
+    "soundcloud",
+    "qobuz",
+    "bandcamp",
+    "zingmp3",
+    "nhaccuatui",
+    "zunemusic",
+    "windowsmediaplayer",
+    "mediaplayer",
+    "foobar2000",
+    "musicbee",
+    "aimp",
+    "vlc",
+    "potplayer",
+    "potplayermini",
+    "potplayermini64",
+    "mpc-hc",
+    "mpc-hc64",
+    "mpc-be",
+    "mpc-be64",
+    "winamp",
+    "audacious",
+    "dopamine",
+    "cloudmusic",
+    "qqmusic",
+    "kugou",
+    "plexamp",
+    "plex",
+    // Web browsers & browser PWAs
+    "chrome",
+    "chromium",
+    "msedge",
+    "microsoftedge",
+    "firefox",
+    "brave",
+    "opera",
+    "operagx",
+    "vivaldi",
+    "arc",
+    "zen",
+    "coccoc",
+    "waterfox",
+    "floorp",
+    "librewolf",
+];
+
+/// Only attach SMTC sessions from official music players and web browsers,
+/// ignoring game launchers/clients (e.g. Riot Client) or unrelated apps.
+pub(crate) fn is_allowed_media_app(aumid: &str) -> bool {
+    if aumid.trim().is_empty() {
+        return false;
+    }
+    let pretty = pretty_app(aumid).to_ascii_lowercase();
+    if ALLOWED_MEDIA_TOKENS.contains(&pretty.as_str()) {
+        return true;
+    }
+    aumid
+        .split(['\\', '/', '!', '.', '_', ' ', ':', ';'])
+        .filter(|tok| !tok.is_empty())
+        .any(|tok| {
+            let low = tok.to_ascii_lowercase();
+            ALLOWED_MEDIA_TOKENS.contains(&low.as_str())
+        })
+}
+
 fn pretty_app(aumid: &str) -> String {
     let s = aumid.rsplit('!').next().unwrap_or(aumid);
     let s = s.rsplit(['\\', '/']).next().unwrap_or(s);
@@ -256,7 +371,7 @@ fn artwork(session: &Session, wic: &IWICImagingFactory, key: &str) -> Result<Opt
 
 #[cfg(test)]
 mod tests {
-    use super::pretty_app;
+    use super::{is_allowed_media_app, pretty_app};
 
     #[test]
     fn app_names() {
@@ -264,5 +379,24 @@ mod tests {
         assert_eq!(pretty_app("Chrome"), "Chrome");
         assert_eq!(pretty_app("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic"), "ZuneMusic");
         assert_eq!(pretty_app("C:\\Apps\\foobar2000.exe"), "Foobar2000");
+    }
+
+    #[test]
+    fn allowlist_filters_unwanted_clients() {
+        assert!(is_allowed_media_app("Spotify.exe"));
+        assert!(is_allowed_media_app("SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"));
+        assert!(is_allowed_media_app("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic"));
+        assert!(is_allowed_media_app("C:\\Apps\\foobar2000.exe"));
+        assert!(is_allowed_media_app("chrome.exe"));
+        assert!(is_allowed_media_app("msedge_proxy.exe"));
+        assert!(is_allowed_media_app("C:\\Users\\u\\AppData\\Local\\CocCoc\\Browser\\Application\\browser.exe"));
+        assert!(is_allowed_media_app("Arc.exe"));
+        assert!(!is_allowed_media_app("RiotClientServices.exe"));
+        assert!(!is_allowed_media_app("RiotClientUx.exe"));
+        assert!(!is_allowed_media_app("LeagueClientUx.exe"));
+        assert!(!is_allowed_media_app("VALORANT-Win64-Shipping.exe"));
+        assert!(!is_allowed_media_app("Discord.exe"));
+        assert!(!is_allowed_media_app("SearchHost.exe"));
+        assert!(!is_allowed_media_app(""));
     }
 }
