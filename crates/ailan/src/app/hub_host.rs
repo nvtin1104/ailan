@@ -689,7 +689,7 @@ impl App {
                 let was = self.state.countdown.is_running();
                 self.state.countdown.toggle(now);
                 if !was && self.state.countdown.is_running() {
-                    self.launch_flight(ui::G_TIMER, FLY_REMIND);
+                    self.launch_flight(ui::G_TIMER, crate::hub::widgets::WHITE);
                 }
             }
             HubAction::TimerDrag => return,
@@ -716,7 +716,8 @@ impl App {
                 } else {
                     label.trim().chars().take(40).collect()
                 };
-                self.state.data.timer_presets.push(ailan_core::clock::TimerPreset { label, seconds: secs });
+                self.state.data.timer_presets.push(ailan_core::clock::TimerPreset { label: label.clone(), seconds: secs });
+                self.state.countdown.label = label;
                 self.hub_ctrl.timer_save_open = false;
                 self.hub_ctrl.timer_save_anim.set_target(0.0);
                 self.hub_ctrl.focus = None;
@@ -750,6 +751,16 @@ impl App {
                     self.state.countdown.reset();
                 }
                 self.state.countdown.set_duration(sec as i64 * 1000);
+                self.state.countdown.label.clear();
+            }
+            HubAction::CountdownSetPreset(i) => {
+                if let Some(p) = self.state.data.timer_presets.get(i as usize).cloned() {
+                    if self.state.countdown.is_active() {
+                        self.state.countdown.reset();
+                    }
+                    self.state.countdown.set_duration(p.seconds as i64 * 1000);
+                    self.state.countdown.label = p.label;
+                }
             }
             HubAction::CountdownAdd(sec) => {
                 let ms = sec as i64 * 1000;
@@ -1039,8 +1050,9 @@ impl App {
                 if self.hub_cursor != Some(pos) {
                     self.hub_cursor = Some(pos);
                 }
-                if self.hub_ctrl.dragging_clock {
-                    if let Some(secs) = self.hub_ctrl.clock_drag_seconds(pos.0, pos.1) {
+                if let Some(hand) = self.hub_ctrl.dragging_clock {
+                    let cur = (self.state.countdown.duration / 1000).max(0) as u32;
+                    if let Some(secs) = self.hub_ctrl.clock_drag_seconds(hand, pos.0, pos.1, cur) {
                         self.on_hub_action(HubAction::CountdownSet(secs));
                     }
                     return Some(LRESULT(0));
@@ -1074,11 +1086,13 @@ impl App {
                 let had_focus = self.hub_ctrl.focus.is_some();
                 match self.hub_ctrl.on_mouse_down(x, y) {
                     Some(HubAction::TimerDrag) => {
-                        self.hub_ctrl.dragging_clock = true;
+                        let cur = (self.state.countdown.duration / 1000).max(0) as u32;
+                        let hand = self.hub_ctrl.pick_clock_hand(x, y, cur);
+                        self.hub_ctrl.dragging_clock = Some(hand);
                         unsafe {
-                            let _ = SetCapture(hwnd);
+                            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
                         }
-                        if let Some(secs) = self.hub_ctrl.clock_drag_seconds(x, y) {
+                        if let Some(secs) = self.hub_ctrl.clock_drag_seconds(hand, x, y, cur) {
                             self.on_hub_action(HubAction::CountdownSet(secs));
                         }
                     }
@@ -1089,10 +1103,10 @@ impl App {
                 apply_cursor_icon(self.cursor_icon_hub());
             }
             WM_LBUTTONUP => {
-                if self.hub_ctrl.dragging_clock {
-                    self.hub_ctrl.dragging_clock = false;
+                self.hub_ctrl.prev_drag_step = None;
+                if self.hub_ctrl.dragging_clock.take().is_some() {
                     unsafe {
-                        let _ = ReleaseCapture();
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
                     }
                 }
             }

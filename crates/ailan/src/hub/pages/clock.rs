@@ -252,94 +252,115 @@ fn alarm_card(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, a: &Alarm) {
     }
 }
 
-// ---- Countdown timer (cardless analog clock + time input + saved presets) ------------
+// ---- Countdown timer (monochrome draggable analog clock + Start + Save) ----------------
 
-fn draw_analog_clock(cv: &mut Canvas, cx_pos: f32, cy_pos: f32, radius: f32, rem_ms: i64, prog: f32, running: bool) {
+fn draw_analog_clock(
+    cv: &mut Canvas,
+    cx: &mut PageCtx,
+    cx_pos: f32,
+    cy_pos: f32,
+    radius: f32,
+    rem_ms: i64,
+    prog: f32,
+    running: bool,
+) {
     use std::f32::consts::{FRAC_PI_2, TAU};
 
     // Subtle outer dial ring
-    cv.stroke_circle(cx_pos, cy_pos, radius, 1.5, WHITE, 0.10);
+    cv.stroke_circle(cx_pos, cy_pos, radius, 1.2, WHITE, 0.14);
 
-    // 60 minute / 12 hour tick marks
-    for i in 0..60 {
-        let is_hour = i % 5 == 0;
-        let is_cardinal = i % 15 == 0;
-        let ang = (i as f32 / 60.0) * TAU - FRAC_PI_2;
+    // 12 clean hour ticks (4 cardinals slightly longer)
+    for i in 0..12 {
+        let is_cardinal = i % 3 == 0;
+        let ang = (i as f32 / 12.0) * TAU - FRAC_PI_2;
         let (ca, sa) = (ang.cos(), ang.sin());
-        let r_out = radius - 5.0;
-        let r_in = r_out - if is_cardinal { 11.0 } else if is_hour { 7.5 } else { 3.5 };
-        let w = if is_cardinal { 2.0 } else if is_hour { 1.5 } else { 1.0 };
-        let alpha = if is_cardinal { 0.55 } else if is_hour { 0.32 } else { 0.14 };
+        let r_out = radius - 6.0;
+        let r_in = r_out - if is_cardinal { 10.0 } else { 5.5 };
         cv.stroke_polyline(
             &[(cx_pos + ca * r_in, cy_pos + sa * r_in), (cx_pos + ca * r_out, cy_pos + sa * r_out)],
             1.0,
-            w,
+            if is_cardinal { 1.8 } else { 1.2 },
             WHITE,
-            alpha,
+            if is_cardinal { 0.60 } else { 0.28 },
         );
     }
 
-    // Countdown progress arc around the dial
+    // Monochrome progress arc around the dial
     let sweep = 360.0 * prog.clamp(0.0, 1.0);
     if sweep > 0.5 {
-        cv.stroke_arc(cx_pos, cy_pos, radius, -90.0, sweep, 3.5, ACCENT_AMBER, if running { 0.95 } else { 0.65 });
+        cv.stroke_arc(cx_pos, cy_pos, radius, -90.0, sweep, 2.6, WHITE, if running { 0.92 } else { 0.55 });
     }
 
-    // Digital readout tucked neatly below the center pivot
-    let rem = fmt_hms(rem_ms);
-    let dig_f = Font::text((radius * 0.16).clamp(12.0, 16.0), 650, Align::Center);
-    cv.text_styled(
-        &rem,
-        dig_f,
-        Rect::new(cx_pos - radius * 0.6, cy_pos + radius * 0.28, radius * 1.2, 22.0),
-        TEXT_BODY,
-        0.9,
-        TextStyle::TABULAR,
-    );
-
-    // Analog hands driven by remaining time
+    // Hands driven by remaining time: hour, minute, and second
     let total_s = (rem_ms.max(0) as f32) / 1000.0;
-    let sec_ang = ((total_s % 60.0) / 60.0) * TAU - FRAC_PI_2;
-    let min_ang = (((total_s / 60.0) % 60.0) / 60.0) * TAU - FRAC_PI_2;
     let hr_ang = (((total_s / 3600.0) % 12.0) / 12.0) * TAU - FRAC_PI_2;
+    let min_ang = (((total_s / 60.0) % 60.0) / 60.0) * TAU - FRAC_PI_2;
+    let sec_ang = ((total_s % 60.0) / 60.0) * TAU - FRAC_PI_2;
 
     // Hour hand
     cv.stroke_polyline(
         &[
             (cx_pos, cy_pos),
-            (cx_pos + hr_ang.cos() * radius * 0.44, cy_pos + hr_ang.sin() * radius * 0.44),
+            (cx_pos + hr_ang.cos() * radius * 0.46, cy_pos + hr_ang.sin() * radius * 0.46),
         ],
         1.0,
-        4.0,
-        TEXT_TITLE,
-        0.95,
+        3.6,
+        TEXT_BODY,
+        0.90,
     );
-    // Minute hand
+    // Minute hand (no dot at tip)
     cv.stroke_polyline(
         &[
             (cx_pos, cy_pos),
-            (cx_pos + min_ang.cos() * radius * 0.66, cy_pos + min_ang.sin() * radius * 0.66),
+            (cx_pos + min_ang.cos() * radius * 0.70, cy_pos + min_ang.sin() * radius * 0.70),
         ],
         1.0,
-        2.8,
-        TEXT_HERO,
+        2.6,
+        WHITE,
         0.95,
     );
     // Second hand with counterweight tail
     cv.stroke_polyline(
         &[
             (cx_pos - sec_ang.cos() * radius * 0.14, cy_pos - sec_ang.sin() * radius * 0.14),
-            (cx_pos + sec_ang.cos() * radius * 0.78, cy_pos + sec_ang.sin() * radius * 0.78),
+            (cx_pos + sec_ang.cos() * radius * 0.80, cy_pos + sec_ang.sin() * radius * 0.80),
         ],
         1.0,
-        1.6,
-        ACCENT_AMBER,
-        1.0,
+        1.4,
+        WHITE,
+        0.65,
     );
 
     // Center pivot
-    cv.fill_circle(cx_pos, cy_pos, 4.5, ACCENT_AMBER, 1.0);
-    cv.fill_circle(cx_pos, cy_pos, 2.0, BG_DEEP_CANVAS, 1.0);
+    cv.fill_circle(cx_pos, cy_pos, 4.0, WHITE, 1.0);
+    cv.fill_circle(cx_pos, cy_pos, 1.6, BG_DEEP_CANVAS, 1.0);
+
+    // Direct-edit digital readout tucked below center pivot (hit registered BEFORE TimerDrag)
+    let dr = Rect::new(cx_pos - 46.0, cy_pos + radius * 0.24, 92.0, 28.0);
+    let tf = Font::text(15.0, 700, Align::Center);
+    if cx.focus == Some(Field::TimerInput) {
+        cv.fill_round(dr, 7.0, WHITE, 0.08);
+        cv.hairline_round(dr, 7.0, WHITE, 0.35);
+        let disp = if cx.timer_input.is_empty() { "00:00" } else { cx.timer_input };
+        let col = if cx.timer_input.is_empty() { TEXT_SECTION } else { TEXT_HERO };
+        cv.text_styled(disp, tf, dr, col, 1.0, TextStyle::TABULAR);
+        let tw = if cx.timer_input.is_empty() {
+            0.0
+        } else {
+            cv.text_width(cx.timer_input, tf, TextStyle::TABULAR)
+        };
+        let caret_x = (cx_pos + tw * 0.5 + 2.0).min(dr.right() - 6.0);
+        cv.fill_round(Rect::new(caret_x, dr.y + 6.0, 1.5, dr.h - 12.0), 0.75, WHITE, 0.95);
+        cx.hit(dr, HubAction::FocusField(Field::TimerInput));
+    } else {
+        let rem = fmt_hms(rem_ms);
+        cv.text_styled(&rem, tf, dr, TEXT_HERO, 0.95, TextStyle::TABULAR);
+        cx.hit(dr, HubAction::FocusField(Field::TimerInput));
+    }
+
+    // Dial drag hit target (registered after digital readout so clicking the text edits it)
+    *cx.clock_dial = Some((cx_pos, cy_pos, radius));
+    cx.hit(Rect::new(cx_pos - radius - 10.0, cy_pos - radius - 10.0, (radius + 10.0) * 2.0, (radius + 10.0) * 2.0), HubAction::TimerDrag);
 }
 
 fn fmt_preset_dur(lang: Lang, secs: u32) -> String {
@@ -358,66 +379,82 @@ pub fn draw_timer(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
     let compact = cx.compact;
     let running = cd.is_running();
 
-    // 1. Analog clock (no card)
-    let clock_r = if compact { 84.0 } else { 98.0 };
+    // 1. Monochrome draggable analog clock (no card)
+    let clock_r = if compact { 86.0 } else { 102.0 };
     let rcx = r.x + r.w * 0.5;
     let rcy = y + 8.0 + clock_r;
     let prog = if cd.is_active() { 1.0 - cd.progress(cx.now) } else { 1.0 };
-    draw_analog_clock(cv, rcx, rcy, clock_r, cd.remaining(cx.now), prog, running);
+    draw_analog_clock(cv, cx, rcx, rcy, clock_r, cd.remaining(cx.now), prog, running);
 
     if cd.is_active() {
         let reset = HubAction::CountdownReset;
         let rr = Rect::new(rcx + clock_r + 12.0, rcy - clock_r, 34.0, 34.0);
         if rr.right() <= r.right() {
-            draw_icon_button(cv, rr, G_RESET, 12.0, cx.hover_t(reset), false, ACCENT_PRIMARY);
+            draw_icon_button(cv, rr, G_RESET, 12.0, cx.hover_t(reset), false, WHITE);
             cx.hit(rr, reset);
         }
     }
 
-    y = rcy + clock_r + 20.0;
+    y = rcy + clock_r + 14.0;
 
-    // 2. Time input + Save preset button
-    let form_w = r.w.min(440.0);
-    let form_x = r.x + (r.w - form_w) * 0.5;
-    let save_w = 74.0;
-    let gap = 8.0;
-    let ir = Rect::new(form_x, y, (form_w - save_w - gap).max(140.0), 40.0);
-    let focused = cx.focus == Some(Field::TimerInput);
-    let act = HubAction::FocusField(Field::TimerInput);
-    draw_text_input(
-        cv,
-        ir,
-        cx.timer_input,
-        t(lang, Key::TimerInputHint),
-        focused,
-        cx.hover_t(act),
-        Font::text(13.0, 450, Align::Left),
-        None,
-        10.0,
-    );
-    cx.hit(ir, act);
+    if !cd.label.is_empty() {
+        cv.text(&cd.label, Font::text(12.5, 600, Align::Center), Rect::new(r.x, y, r.w, 18.0), TEXT_BODY, 0.9);
+        y += 24.0;
+    } else {
+        y += 8.0;
+    }
 
-    let sr = Rect::new(ir.right() + gap, y + 2.0, save_w, 36.0);
-    let save_act = HubAction::TimerPresetSave;
-    draw_button(cv, sr, t(lang, Key::SavePreset), ButtonKind::Ghost, cx.hover_t(save_act));
-    cx.hit(sr, save_act);
-    y += 40.0 + 14.0;
-
-    // 3. Start / Pause + quick +/-1m controls
+    // 2. Start + Save buttons only (no -1' / +1')
     let items = [
-        Btn { action: HubAction::CountdownAdd(-60), glyph: None, label: "−1′".into(), primary: false },
         Btn {
             action: HubAction::CountdownToggle,
             glyph: Some(if running { G_PAUSE } else { G_PLAY }),
             label: if running { t(lang, Key::Pause) } else { t(lang, Key::Start) }.into(),
             primary: true,
         },
-        Btn { action: HubAction::CountdownAdd(60), glyph: None, label: "+1′".into(), primary: false },
+        Btn {
+            action: HubAction::TimerSaveToggle,
+            glyph: None,
+            label: t(lang, Key::SavePreset).into(),
+            primary: false,
+        },
     ];
-    button_group(cv, cx, rcx, y, 38.0, r.w.min(340.0), &items);
-    y += 38.0 + 22.0;
+    button_group(cv, cx, rcx, y, 38.0, r.w.min(320.0), &items);
+    y += 38.0 + 12.0;
 
-    // 4. Custom saved presets with labels (wrapping chips directly on canvas, no card)
+    // 3. Animated Save-label input (slides/fades open when clicking Save)
+    let form_w = r.w.min(420.0);
+    let form_x = r.x + (r.w - form_w) * 0.5;
+    let t_anim = (cx.timer_save_anim / 100.0).clamp(0.0, 1.0);
+    if t_anim > 0.01 {
+        let ease = 1.0 - (1.0 - t_anim) * (1.0 - t_anim);
+        let box_h = 40.0 * ease;
+        let prev_a = cv.alpha;
+        cv.alpha = prev_a * ease;
+        let ir = Rect::new(form_x, y, form_w, box_h.max(24.0));
+        draw_text_input(
+            cv,
+            ir,
+            cx.timer_label_input,
+            t(lang, Key::TimerLabelHint),
+            cx.focus == Some(Field::TimerPresetLabel),
+            cx.hover_t(HubAction::FocusField(Field::TimerPresetLabel)),
+            Font::text(13.0, 450, Align::Left),
+            None,
+            38.0,
+        );
+        let save = HubAction::SubmitField(Field::TimerPresetLabel);
+        let sr = Rect::new(ir.right() - 32.0, ir.y + (ir.h - 24.0) * 0.5, 26.0, 24.0);
+        draw_icon_button(cv, sr, G_CHECKMARK, 10.0, cx.hover_t(save), true, WHITE);
+        cx.hit(sr, save);
+        cx.hit(ir, HubAction::FocusField(Field::TimerPresetLabel));
+        cv.alpha = prev_a;
+        y += box_h + 14.0 * ease;
+    } else {
+        y += 6.0;
+    }
+
+    // 4. Monochrome saved presets with labels (no card)
     let presets = &cx.st.data.timer_presets;
     if !presets.is_empty() {
         let mut px = form_x;
@@ -433,23 +470,23 @@ pub fn draw_timer(cv: &mut Canvas, cx: &mut PageCtx, r: Rect, mut y: f32) {
                 y += 40.0;
             }
             let cr = Rect::new(px, y, cw, 32.0);
-            let set_act = HubAction::CountdownSet(p.seconds);
+            let set_act = HubAction::CountdownSetPreset(i as u8);
             let rm_act = HubAction::TimerPresetRemove(i as u8);
-            let sel = !cd.is_active() && cd.duration == p.seconds as i64 * 1000;
+            let sel = !cd.is_active() && cd.duration == p.seconds as i64 * 1000 && (cd.label.is_empty() || cd.label == p.label);
             let h = cx.hover_t(set_act);
             let h_rm = cx.hover_t(rm_act);
             if sel {
-                cv.fill_round(cr, 16.0, ACCENT_AMBER, 0.16);
-                cv.hairline_round(cr, 16.0, ACCENT_AMBER, 0.5);
+                cv.fill_round(cr, 16.0, WHITE, 0.14);
+                cv.hairline_round(cr, 16.0, WHITE, 0.55);
             } else {
                 cv.fill_round(cr, 16.0, WHITE, 0.04 + 0.05 * (h.max(h_rm)));
-                cv.hairline_round(cr, 16.0, WHITE, 0.08);
+                cv.hairline_round(cr, 16.0, WHITE, 0.10);
             }
             cv.text_styled(
                 &txt,
                 f,
                 Rect::new(cr.x + 12.0, cr.y, cr.w - 22.0 - rm_space, cr.h),
-                if sel { mix(ACCENT_AMBER, WHITE, 0.3) } else { TEXT_TITLE },
+                if sel { TEXT_HERO } else { TEXT_TITLE },
                 1.0,
                 TextStyle::TABULAR,
             );

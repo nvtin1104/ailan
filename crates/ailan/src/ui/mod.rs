@@ -344,6 +344,30 @@ pub fn draw(cv: &mut Canvas, st: &AppState, v: &View) -> Vec<Hit> {
 
     cv.alpha = 1.0;
     draw_shell(cv, p, v.dock, v.expand, v.hot);
+    if v.expand < 0.25
+        && v.mode == Collapsed::Banner
+        && st.banner.as_ref().is_some_and(|b| b.icon == ailan_core::state::BannerIcon::TimerDone)
+    {
+        let pulse = 0.5 + 0.5 * ((v.now as f32 * 0.007).sin());
+        let radii = pill_radii(v.dock, v.expand, p.w, p.h);
+        let ear = ear_for(v.dock);
+        let (ix, iy) = match v.dock {
+            Dock::Top => (ear + 0.5, 0.5),
+            Dock::Bottom => (ear + 0.5, -0.5),
+            Dock::Left => (0.5, ear + 0.5),
+            Dock::Right => (-0.5, ear + 0.5),
+            _ => (0.5, 0.5),
+        };
+        cv.stroke_island(
+            p.inset(ix, iy),
+            v.dock,
+            radii.map(|r| (r - 0.5).max(0.0)),
+            ear,
+            1.4 + 1.4 * pulse,
+            WHITE,
+            0.25 + 0.65 * pulse,
+        );
+    }
     if v.glow > 0.01 {
         let g = crate::gfx::Gradient::new(&[(0.0, WHITE, 0.18), (1.0, WHITE, 0.0)]);
         cv.fill_circle_radial(p.x + p.w * 0.5, p.y + p.h * 0.5, p.w * 0.45, g, v.glow * 0.6);

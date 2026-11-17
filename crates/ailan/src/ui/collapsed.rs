@@ -30,6 +30,23 @@ fn draw_happy_eye(cv: &mut Canvas, ex: f32, ey: f32, r: f32) {
     cv.stroke_arc(ex, ey + r * 0.35, r * 0.88, -155.0, 130.0, (r * 0.34).clamp(1.6, 2.3), WHITE, 0.96);
 }
 
+fn draw_cute_mouth(cv: &mut Canvas, cx: f32, my: f32, scale: f32, mood: CuteMood) {
+    match mood {
+        CuteMood::Normal => {
+            cv.stroke_arc(cx, my - 2.0 * scale, 4.0 * scale, 25.0, 130.0, 1.5, WHITE, 0.88);
+        }
+        CuteMood::Blink => {
+            cv.stroke_arc(cx, my - 2.0 * scale, 3.2 * scale, 35.0, 110.0, 1.4, WHITE, 0.78);
+        }
+        CuteMood::Happy | CuteMood::Sparkle => {
+            cv.stroke_arc(cx, my - 2.5 * scale, 4.8 * scale, 15.0, 150.0, 1.8, WHITE, 0.96);
+        }
+        CuteMood::Wink => {
+            cv.stroke_arc(cx, my - 2.0 * scale, 4.2 * scale, 20.0, 140.0, 1.6, WHITE, 0.92);
+        }
+    }
+}
+
 fn draw_cute_eyes(cv: &mut Canvas, cx: f32, cy: f32, eye_dx: f32, eye_r: f32, gaze: (f32, f32), mood: CuteMood, hot: bool) {
     let mood = if hot && mood == CuteMood::Normal { CuteMood::Happy } else { mood };
     let (lx, rx) = (cx - eye_dx, cx + eye_dx);
@@ -165,25 +182,40 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
         }
         Collapsed::Banner => {
             let Some(b) = &st.banner else { return };
-            let (g, sweep) = match b.icon {
-                BannerIcon::Charging | BannerIcon::BatteryLow => {
-                    let pct = st.battery.flatten().map(|x| x.percent as f32 / 100.0).unwrap_or(0.5);
-                    (G_BOLT, pct * 360.0)
-                }
-                BannerIcon::Headphones => (G_HEADPHONE, 360.0),
-                BannerIcon::Reminder => (G_BELL, 360.0),
-                BannerIcon::Focus => (G_TIMER, 360.0),
-                BannerIcon::Break => (G_MOON, 360.0),
-                BannerIcon::Alarm => (G_BELL, 360.0),
-                BannerIcon::TimerDone => (G_TIMER, 360.0),
+            let text_x = if b.icon == BannerIcon::TimerDone {
+                let mood = if (v.now / 650) % 2 == 0 { CuteMood::Happy } else { CuteMood::Sparkle };
+                draw_cute_eyes(cv, p.x + 25.0, cy, 6.2, 3.6, v.gaze, mood, false);
+                p.x + 42.0
+            } else {
+                let (g, sweep) = match b.icon {
+                    BannerIcon::Charging | BannerIcon::BatteryLow => {
+                        let pct = st.battery.flatten().map(|x| x.percent as f32 / 100.0).unwrap_or(0.5);
+                        (G_BOLT, pct * 360.0)
+                    }
+                    BannerIcon::Headphones => (G_HEADPHONE, 360.0),
+                    BannerIcon::Reminder => (G_BELL, 360.0),
+                    BannerIcon::Focus => (G_TIMER, 360.0),
+                    BannerIcon::Break => (G_MOON, 360.0),
+                    BannerIcon::Alarm => (G_BELL, 360.0),
+                    BannerIcon::TimerDone => (G_TIMER, 360.0),
+                };
+                let (gx, r) = (p.x + 20.0, 8.0);
+                cv.stroke_circle(gx, cy, r, 2.0, WHITE, 0.22);
+                cv.stroke_arc(gx, cy, r, -90.0, sweep, 2.0, WHITE, 0.95);
+                cv.glyph(g, 8.5, Rect::new(gx - 9.0, cy - 9.0, 18.0, 18.0), WHITE, 1.0);
+                p.x + 34.0
             };
-            let (gx, r) = (p.x + 20.0, 8.0);
-            cv.stroke_circle(gx, cy, r, 2.0, WHITE, 0.22);
-            cv.stroke_arc(gx, cy, r, -90.0, sweep, 2.0, WHITE, 0.95);
-            cv.glyph(g, 8.5, Rect::new(gx - 9.0, cy - 9.0, 18.0, 18.0), WHITE, 1.0);
 
-            // One line: reminders show the task itself, other alerts their title.
-            let line = if b.icon == BannerIcon::Reminder { b.body.as_str() } else { b.title.as_str() };
+            // One line: reminders show the task itself; TimerDone shows title + label if distinct.
+            let timer_line;
+            let line = if b.icon == BannerIcon::Reminder {
+                b.body.as_str()
+            } else if b.icon == BannerIcon::TimerDone && !b.body.is_empty() && b.body != b.title {
+                timer_line = format!("{} · {}", b.title, b.body);
+                timer_line.as_str()
+            } else {
+                b.title.as_str()
+            };
             let mut right = p.right() - 10.0;
             if b.todo_id.is_some() || b.alarm_id.is_some() {
                 // Compact actions: snooze 5 min and done.
@@ -205,7 +237,7 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
                     right -= 50.0;
                 }
             }
-            let tx = p.x + 36.0;
+            let tx = text_x;
             cv.text(line, Font::text(13.0, 600, Align::Left), Rect::new(tx, p.y, (right - tx).max(0.0), p.h), WHITE, 0.96);
             hits.push(Hit { rect: p, action: Action::DismissBanner });
         }
@@ -223,8 +255,10 @@ fn draw_collapsed_vertical(
     let cx = p.x + p.w * 0.5;
     match v.mode {
         Collapsed::Minimal => {
-            super::draw_status_ring(cv, st, cx, p.y + 28.0);
-            draw_cute_eyes(cv, cx, p.y + 62.0, 7.5, 4.4, v.gaze, v.cute_mood, v.hot);
+            let cy = p.y + p.h * 0.5;
+            let mood = if v.hot && v.cute_mood == CuteMood::Normal { CuteMood::Happy } else { v.cute_mood };
+            draw_cute_eyes(cv, cx, cy - 4.0, 8.0, 4.6, v.gaze, mood, v.hot);
+            draw_cute_mouth(cv, cx, cy + 7.0, 1.0, mood);
         }
         Collapsed::Media => {
             cv.glyph(G_MUSIC, 11.5, Rect::new(cx - 8.0, p.y + 12.0, 16.0, 16.0), WHITE, if playing { 0.95 } else { 0.45 });

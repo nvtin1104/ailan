@@ -947,10 +947,22 @@ impl App {
             && self.state.media.as_ref().is_some_and(|m| m.playing)
     }
 
+    fn timer_banner_anim_active(&self) -> bool {
+        self.island_live()
+            && !self.expanded
+            && self.mode == Collapsed::Banner
+            && !self.state.settings.reduce_motion
+            && self.state.banner.as_ref().is_some_and(|b| b.icon == ailan_core::state::BannerIcon::TimerDone)
+    }
+
     pub fn wants_frame(&self) -> bool {
         !self.quit
             && ((self.island_live()
-                && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()))
+                && (self.needs_draw
+                    || !self.settled()
+                    || self.media_marquee_active()
+                    || self.audio_visual_active()
+                    || self.timer_banner_anim_active()))
                 || self.hub_needs_draw
                 || self.hub_anim.is_some()
                 || self.flight_active()
@@ -986,7 +998,9 @@ impl App {
         } else {
             self.disc_last = Instant::now();
         }
-        if self.island_live() && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()) {
+        if self.island_live()
+            && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active() || self.timer_banner_anim_active())
+        {
             let now_i = Instant::now();
             let dt = now_i.duration_since(self.last_frame).as_secs_f32();
             self.last_frame = now_i;

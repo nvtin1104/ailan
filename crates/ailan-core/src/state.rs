@@ -302,9 +302,14 @@ impl AppState {
             out.push(Notification { title: t(lang, Key::AlarmTitle).into(), body: title });
         }
         if self.countdown.poll(now) {
-            let body = t(lang, Key::TimerDone);
-            self.banner(BannerIcon::TimerDone, body, body, now + ALARM_BANNER_MS);
-            out.push(Notification { title: t(lang, Key::ClockTimer).into(), body: body.into() });
+            let title = t(lang, Key::TimerDone);
+            let body = if self.countdown.label.is_empty() {
+                title.to_string()
+            } else {
+                self.countdown.label.clone()
+            };
+            self.banner(BannerIcon::TimerDone, title, body.clone(), now + ALARM_BANNER_MS);
+            out.push(Notification { title: title.into(), body });
         }
         let due = self.data.todos.take_due(now);
         if !due.is_empty() {

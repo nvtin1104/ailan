@@ -98,6 +98,8 @@ pub enum HubAction {
     CountdownReset,
     /// Set an idle countdown to this many seconds.
     CountdownSet(u32),
+    /// Set an idle countdown from a saved preset index (also copies its label).
+    CountdownSetPreset(u8),
     /// Add (or subtract) seconds.
     CountdownAdd(i32),
     TimerDrag,

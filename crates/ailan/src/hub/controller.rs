@@ -45,6 +45,13 @@ fn nav_index(p: HubPage) -> usize {
     NAV_PAGES.iter().position(|x| *x == p).unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockHand {
+    Hour,
+    Minute,
+    Second,
+}
+
 /// Result of a key press routed to the hub.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyOutcome {
@@ -71,6 +78,12 @@ pub struct HubController {
     pub alarm_input: String,
     pub alarm_label_input: String,
     pub timer_input: String,
+    pub timer_label_input: String,
+    pub timer_save_open: bool,
+    pub timer_save_anim: Spring,
+    pub clock_dial: Option<(f32, f32, f32)>,
+    pub dragging_clock: Option<ClockHand>,
+    pub prev_drag_step: Option<u32>,
     /// Reminders page tab: 0 reminders, 1 alarms, 2 timer.
     pub clock_tab: usize,
     clock_ind: Indicator,
@@ -117,6 +130,12 @@ impl HubController {
             alarm_input: String::new(),
             alarm_label_input: String::new(),
             timer_input: String::new(),
+            timer_label_input: String::new(),
+            timer_save_open: false,
+            timer_save_anim: Spring::new(0.0).with(360.0, 34.0),
+            clock_dial: None,
+            dragging_clock: None,
+            prev_drag_step: None,
             clock_tab: 0,
             clock_ind: Indicator::new(0),
             todo_filter: TodoFilter::Today,
@@ -191,9 +210,16 @@ impl HubController {
         self.clock_tab = tab.min(2);
         self.clock_ind.go(self.clock_tab);
         self.scroll_to(0.0, true);
-        if matches!(self.focus, Some(Field::Capture | Field::Alarm | Field::AlarmLabel(_) | Field::TimerInput)) {
+        if matches!(
+            self.focus,
+            Some(Field::Capture | Field::Alarm | Field::AlarmLabel(_) | Field::TimerInput | Field::TimerPresetLabel)
+        ) {
             self.focus = None;
         }
+        self.timer_save_open = false;
+        self.timer_save_anim.set_target(0.0);
+        self.dragging_clock = None;
+        self.prev_drag_step = None;
     }
 
     pub fn set_filter(&mut self, f: TodoFilter) {
@@ -239,6 +265,7 @@ impl HubController {
         !(self.nav.is_settled()
             && self.filter_ind.is_settled()
             && self.clock_ind.is_settled()
+            && self.timer_save_anim.is_settled()
             && self.fade.is_settled()
             && self.scroll.is_settled()
             && self.pops.is_empty())
@@ -254,6 +281,7 @@ impl HubController {
             self.nav.snap();
             self.filter_ind.snap();
             self.clock_ind.snap();
+            self.timer_save_anim.snap();
             self.fade.snap();
             self.scroll.snap();
             self.pops.clear();
@@ -262,6 +290,7 @@ impl HubController {
         self.nav.step(dt);
         self.filter_ind.step(dt);
         self.clock_ind.step(dt);
+        self.timer_save_anim.step(dt);
         self.fade.step(dt);
         self.scroll.step(dt);
         self.pops.retain_mut(|p| !p.step(dt));
@@ -307,6 +336,81 @@ impl HubController {
 
     // ---- keyboard ------------------------------------------------------------------------
 
+    pub fn pick_clock_hand(&self, x: f32, y: f32, cur_secs: u32) -> ClockHand {
+        let Some((cx, cy, r)) = self.clock_dial else { return ClockHand::Minute };
+        let (dx, dy) = (x - cx, y - cy);
+        let dist = (dx * dx + dy * dy).sqrt();
+        let theta = dx.atan2(-dy).rem_euclid(std::f32::consts::TAU);
+        let ang_diff = |a: f32, b: f32| {
+            let d = (a - b).abs() % std::f32::consts::TAU;
+            d.min(std::f32::consts::TAU - d)
+        };
+        let total_s = cur_secs as f32;
+        let hr_ang = (((total_s / 3600.0) % 12.0) / 12.0) * std::f32::consts::TAU;
+        let min_ang = (((total_s / 60.0) % 60.0) / 60.0) * std::f32::consts::TAU;
+        let sec_ang = (total_s % 60.0) / 60.0 * std::f32::consts::TAU;
+
+        let d_hr = ang_diff(theta, hr_ang) + (dist - r * 0.36).abs() / r * 0.45;
+        let d_min = ang_diff(theta, min_ang) + (dist - r * 0.62).abs() / r * 0.45;
+        let d_sec = ang_diff(theta, sec_ang) + (dist - r * 0.78).abs() / r * 0.45;
+
+        if d_hr < d_min && d_hr < d_sec && d_hr < 0.65 {
+            ClockHand::Hour
+        } else if d_sec < d_min && d_sec < 0.65 {
+            ClockHand::Second
+        } else {
+            ClockHand::Minute
+        }
+    }
+
+    pub fn clock_drag_seconds(&mut self, hand: ClockHand, x: f32, y: f32, cur_secs: u32) -> Option<u32> {
+        let (cx, cy, _) = self.clock_dial?;
+        let theta = (x - cx).atan2(-(y - cy)).rem_euclid(std::f32::consts::TAU);
+        let (mut h, mut m, mut s) = (cur_secs / 3600, (cur_secs / 60) % 60, cur_secs % 60);
+        let out = match hand {
+            ClockHand::Hour => {
+                let nh = ((theta / std::f32::consts::TAU) * 12.0).round() as u32 % 12;
+                self.prev_drag_step = Some(nh);
+                let total = nh * 3600 + m * 60 + s;
+                if total == 0 { 12 * 3600 } else { total }
+            }
+            ClockHand::Minute => {
+                let nm = ((theta / std::f32::consts::TAU) * 60.0).round() as u32 % 60;
+                if let Some(prev) = self.prev_drag_step {
+                    if prev > 45 && nm < 15 {
+                        h = (h + 1).min(23);
+                    } else if prev < 15 && nm > 45 {
+                        h = h.saturating_sub(1);
+                    }
+                }
+                self.prev_drag_step = Some(nm);
+                let total = h * 3600 + nm * 60 + s;
+                if total == 0 { 60 } else { total }
+            }
+            ClockHand::Second => {
+                let ns = ((theta / std::f32::consts::TAU) * 60.0).round() as u32 % 60;
+                if let Some(prev) = self.prev_drag_step {
+                    if prev > 45 && ns < 15 {
+                        let mins = h * 60 + m + 1;
+                        if mins < 24 * 60 {
+                            h = mins / 60;
+                            m = mins % 60;
+                        }
+                    } else if prev < 15 && ns > 45 {
+                        let mins = (h * 60 + m).saturating_sub(1);
+                        h = mins / 60;
+                        m = mins % 60;
+                    }
+                }
+                self.prev_drag_step = Some(ns);
+                s = ns;
+                let total = h * 3600 + m * 60 + s;
+                if total == 0 { 1 } else { total }
+            }
+        };
+        Some(out.min(24 * 3600 - 1))
+    }
+
     pub fn field_mut(&mut self, f: Field) -> &mut String {
         match f {
             Field::Capture => &mut self.capture,
@@ -314,6 +418,7 @@ impl HubController {
             Field::Alarm => &mut self.alarm_input,
             Field::AlarmLabel(_) => &mut self.alarm_label_input,
             Field::TimerInput => &mut self.timer_input,
+            Field::TimerPresetLabel => &mut self.timer_label_input,
         }
     }
 
@@ -406,6 +511,7 @@ impl HubController {
         self.reduce_motion = st.settings.reduce_motion;
         self.hits.clear();
         self.spots.clear();
+        self.clock_dial = None;
         let prev_alpha = cv.alpha;
         cv.alpha *= self.close_alpha.clamp(0.0, 1.0);
         draw_window_backdrop(cv, Rect::new(0.0, 0.0, w, h), !self.is_maximized);
@@ -701,6 +807,9 @@ impl HubController {
                 alarm_input: &self.alarm_input,
                 alarm_label_input: &self.alarm_label_input,
                 timer_input: &self.timer_input,
+                timer_label_input: &self.timer_label_input,
+                timer_save_anim: self.timer_save_anim.value,
+                clock_dial: &mut self.clock_dial,
                 clock_tab: self.clock_tab,
                 clock_tab_pos: self.clock_ind.pos(),
                 scroll,

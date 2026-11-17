@@ -162,6 +162,7 @@ impl Alarms {
 pub struct Countdown {
     /// Configured length, ms.
     pub duration: i64,
+    pub label: String,
     ends_at: Option<i64>,
     remaining: i64,
 }
@@ -177,7 +178,7 @@ impl Countdown {
 
     pub fn new(duration: i64) -> Self {
         let d = duration.clamp(1000, Self::MAX);
-        Self { duration: d, ends_at: None, remaining: d }
+        Self { duration: d, label: String::new(), ends_at: None, remaining: d }
     }
 
     pub fn is_running(&self) -> bool {
