@@ -661,11 +661,7 @@ impl App {
                     self.alert_w = ui::REST_W;
                     return;
                 };
-                let line = if matches!(b.icon, BannerIcon::Reminder | BannerIcon::Message) {
-                    b.body.clone()
-                } else {
-                    b.title.clone()
-                };
+                let line = if b.icon == BannerIcon::Reminder { b.body.clone() } else { b.title.clone() };
                 let extra = if b.todo_id.is_some() || b.alarm_id.is_some() {
                     70.0
                 } else if matches!(b.icon, BannerIcon::Charging | BannerIcon::BatteryLow) {
@@ -704,14 +700,11 @@ impl App {
 
     // ---- state transitions -------------------------------------------------------
 
-    /// Reminder / alarm / timer / mirrored-message banners surface even over fullscreen.
+    /// Reminder / alarm / timer banners surface on the island even over fullscreen.
     fn alert_peek(&self) -> bool {
         self.hidden
             && self.state.banner.as_ref().is_some_and(|b| {
-                matches!(
-                    b.icon,
-                    BannerIcon::Reminder | BannerIcon::Alarm | BannerIcon::TimerDone | BannerIcon::Message
-                )
+                matches!(b.icon, BannerIcon::Reminder | BannerIcon::Alarm | BannerIcon::TimerDone)
             })
     }
 

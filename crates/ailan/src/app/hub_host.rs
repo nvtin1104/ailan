@@ -15,7 +15,7 @@ use crate::gfx::Gfx;
 use crate::hub::controller::KeyOutcome;
 use crate::hub::{Field, HubAction};
 use crate::platform::media::MediaCmd;
-use crate::platform::{autostart, notify_mirror, sys};
+use crate::platform::{autostart, sys};
 use crate::ui;
 
 use super::{apply_cursor_icon, App, FLY_REMIND, FLY_TODO, T_HUB};
@@ -582,6 +582,8 @@ impl App {
                         .find(|a| a.id == id)
                         .map(|a| a.label.clone())
                         .unwrap_or_default();
+                } else if f == Field::TimerInput {
+                    self.hub_ctrl.timer_input = ailan_core::clock::fmt_hms(self.state.countdown.remaining(now));
                 }
                 self.hub_ctrl.focus = Some(f);
                 unsafe {
@@ -689,6 +691,36 @@ impl App {
                 if !was && self.state.countdown.is_running() {
                     self.launch_flight(ui::G_TIMER, FLY_REMIND);
                 }
+            }
+            HubAction::TimerDrag => return,
+            HubAction::TimerSaveToggle => {
+                self.hub_ctrl.timer_save_open = !self.hub_ctrl.timer_save_open;
+                if self.hub_ctrl.timer_save_open {
+                    self.hub_ctrl.timer_label_input.clear();
+                    self.hub_ctrl.timer_save_anim.set_target(100.0);
+                    self.hub_ctrl.focus = Some(Field::TimerPresetLabel);
+                } else {
+                    self.hub_ctrl.timer_save_anim.set_target(0.0);
+                    if self.hub_ctrl.focus == Some(Field::TimerPresetLabel) {
+                        self.hub_ctrl.focus = None;
+                    }
+                }
+                self.hub_needs_draw = true;
+                return;
+            }
+            HubAction::SubmitField(Field::TimerPresetLabel) => {
+                let label = self.hub_ctrl.take_field(Field::TimerPresetLabel);
+                let secs = (self.state.countdown.duration / 1000).max(1) as u32;
+                let label = if label.trim().is_empty() {
+                    ailan_core::clock::fmt_hms(secs as i64 * 1000)
+                } else {
+                    label.trim().chars().take(40).collect()
+                };
+                self.state.data.timer_presets.push(ailan_core::clock::TimerPreset { label, seconds: secs });
+                self.hub_ctrl.timer_save_open = false;
+                self.hub_ctrl.timer_save_anim.set_target(0.0);
+                self.hub_ctrl.focus = None;
+                self.state.mark_data_dirty(now);
             }
             HubAction::TimerPresetSave => {
                 let raw = self.hub_ctrl.take_field(Field::TimerInput);
@@ -811,11 +843,6 @@ impl App {
             }
             HubAction::ToggleReduceMotion => {
                 self.state.settings.reduce_motion = !self.state.settings.reduce_motion;
-                self.state.mark_settings_dirty(now);
-            }
-            HubAction::ToggleMirrorNotifications => {
-                self.state.settings.mirror_notifications = !self.state.settings.mirror_notifications;
-                notify_mirror::set_enabled(self.state.settings.mirror_notifications);
                 self.state.mark_settings_dirty(now);
             }
         }
@@ -1012,6 +1039,12 @@ impl App {
                 if self.hub_cursor != Some(pos) {
                     self.hub_cursor = Some(pos);
                 }
+                if self.hub_ctrl.dragging_clock {
+                    if let Some(secs) = self.hub_ctrl.clock_drag_seconds(pos.0, pos.1) {
+                        self.on_hub_action(HubAction::CountdownSet(secs));
+                    }
+                    return Some(LRESULT(0));
+                }
                 if !self.hub_mouse_inside {
                     self.hub_mouse_inside = true;
                     let mut tme = TRACKMOUSEEVENT {
@@ -1040,11 +1073,28 @@ impl App {
                 let (x, y) = self.dip_from(lparam, hs, hs);
                 let had_focus = self.hub_ctrl.focus.is_some();
                 match self.hub_ctrl.on_mouse_down(x, y) {
+                    Some(HubAction::TimerDrag) => {
+                        self.hub_ctrl.dragging_clock = true;
+                        unsafe {
+                            let _ = SetCapture(hwnd);
+                        }
+                        if let Some(secs) = self.hub_ctrl.clock_drag_seconds(x, y) {
+                            self.on_hub_action(HubAction::CountdownSet(secs));
+                        }
+                    }
                     Some(act) => self.on_hub_action(act),
                     None if had_focus => self.hub_needs_draw = true,
                     None => {}
                 }
                 apply_cursor_icon(self.cursor_icon_hub());
+            }
+            WM_LBUTTONUP => {
+                if self.hub_ctrl.dragging_clock {
+                    self.hub_ctrl.dragging_clock = false;
+                    unsafe {
+                        let _ = ReleaseCapture();
+                    }
+                }
             }
             WM_MOUSEWHEEL => {
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16;

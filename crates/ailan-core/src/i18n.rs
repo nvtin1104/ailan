@@ -159,6 +159,7 @@ pub enum Key {
     AddAlarm,
     AlarmLabelHint,
     TimerInputHint,
+    TimerLabelHint,
     SavePreset,
 }
 
@@ -265,6 +266,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             AddAlarm => "Add",
             AlarmLabelHint => "Add label…",
             TimerInputHint => "Time (e.g. 15m, 05:30, 25m Focus)",
+            TimerLabelHint => "Preset label (e.g. Pomodoro)…",
             SavePreset => "Save",
             NothingPlaying => "Nothing playing",
             NothingPlayingHint => "Play something in Spotify, a browser or any player",
@@ -406,6 +408,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             AddAlarm => "Thêm",
             AlarmLabelHint => "Thêm nội dung…",
             TimerInputHint => "Nhập giờ (vd: 15m, 05:30, 25m Học)",
+            TimerLabelHint => "Nhập tên mốc (vd: Pomodoro)…",
             SavePreset => "Lưu",
             NothingPlaying => "Không có gì đang phát",
             NothingPlayingHint => "Phát nhạc trên Spotify, trình duyệt hoặc bất kỳ trình phát nào",

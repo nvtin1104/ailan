@@ -31,9 +31,6 @@ A small pill rests at the top-center of the work area. Click it to open music an
   - status: Wi-Fi/Ethernet, battery and charging, headphones
   - OSD pops up when volume or brightness changes
   - banners for charging, low battery and headphones connected
-- **Notification mirroring**
-  - Zalo / mail / other app toasts appear as Dynamic Island banners (toggle in Hub → Settings)
-  - needs notification access: Settings → Privacy → Notifications → Ailan
 
 ## Build and run
 

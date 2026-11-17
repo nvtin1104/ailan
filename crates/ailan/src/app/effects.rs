@@ -45,7 +45,6 @@ impl App {
                     until: now + 5_000,
                     todo_id: None,
                     alarm_id: None,
-                    notify_id: None,
                 });
             }
             Some(MenuCmd::Exit) => unsafe {

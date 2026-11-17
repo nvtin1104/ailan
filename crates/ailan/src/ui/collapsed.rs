@@ -8,7 +8,7 @@ use ailan_core::AppState;
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
 use super::{
     draw_audio_bars, hover_amt, Action, CuteMood, Hit, View, BG, G_BELL, G_BOLT, G_BRIGHT, G_CHECKMARK, G_HEADPHONE,
-    G_MESSAGE, G_MOON, G_MUSIC, G_MUTE, G_TIMER, G_VOLUME, SURFACE, WHITE,
+    G_MOON, G_MUSIC, G_MUTE, G_TIMER, G_VOLUME, SURFACE, WHITE,
 };
 
 const BLUSH_RGB: u32 = 0xFF7EB6;

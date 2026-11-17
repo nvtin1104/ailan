@@ -42,8 +42,10 @@ pub enum Field {
     Alarm,
     /// Inline label edit on an existing alarm card.
     AlarmLabel(u64),
-    /// Custom duration/preset input on the Reminders → Timer tab.
+    /// Custom duration input on the Reminders → Timer tab.
     TimerInput,
+    /// Animated preset label input on the Reminders → Timer tab.
+    TimerPresetLabel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +100,8 @@ pub enum HubAction {
     CountdownSet(u32),
     /// Add (or subtract) seconds.
     CountdownAdd(i32),
+    TimerDrag,
+    TimerSaveToggle,
     TimerPresetSave,
     TimerPresetRemove(u8),
 
@@ -105,7 +109,6 @@ pub enum HubAction {
     SetLanguage(Lang),
     ToggleAutostart,
     ToggleReduceMotion,
-    ToggleMirrorNotifications,
 }
 
 impl HubAction {
@@ -134,6 +137,9 @@ pub struct PageCtx<'a> {
     pub alarm_input: &'a str,
     pub alarm_label_input: &'a str,
     pub timer_input: &'a str,
+    pub timer_label_input: &'a str,
+    pub timer_save_anim: f32,
+    pub clock_dial: &'a mut Option<(f32, f32, f32)>,
     /// Selected Reminders tab (0 reminders, 1 alarms, 2 timer) and
     /// its spring-animated indicator position.
     pub clock_tab: usize,

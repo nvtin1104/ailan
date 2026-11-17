@@ -1,10 +1,9 @@
 //! Notch window interaction: gaze tracking, expand/collapse, text input, and Win32 handle.
 
 use ailan_core::settings::{HubPage, Tab};
-use ailan_core::state::{BannerIcon, Collapsed};
+use ailan_core::state::Collapsed;
 use ailan_core::todo::{parse_input, MAX_TEXT};
 use ailan_core::AppEvent;
-use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::core::w;
 
@@ -18,7 +17,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::platform::{notify_mirror, WM_APP_EDIT};
+use crate::platform::WM_APP_EDIT;
 
 static EDIT_PREV: AtomicIsize = AtomicIsize::new(0);
 static NOTCH_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -94,9 +93,7 @@ impl App {
             self.tab_pos.value = idx;
             self.tab_pos.set_target(idx);
         }
-        if let Some(id) = self.state.dismiss_banner() {
-            notify_mirror::dismiss(id);
-        }
+        self.state.dismiss_banner();
         if !self.pinned {
             install_outside_hook(self.hwnd);
         }
@@ -392,15 +389,8 @@ impl App {
         match action {
             Action::Expand => self.expand(),
             Action::DismissBanner => {
-                let message = self.state.banner.as_ref().is_some_and(|b| b.icon == BannerIcon::Message);
-                if let Some(id) = self.state.dismiss_banner() {
-                    notify_mirror::dismiss(id);
-                }
-                if message {
-                    self.after_change();
-                } else {
-                    self.expand();
-                }
+                self.state.dismiss_banner();
+                self.expand();
             }
             Action::Tab(t) => self.select_tab(t),
             Action::SlidePrev => self.slide_activity(-1),
@@ -460,18 +450,8 @@ impl App {
             WM_APP_EVENT => {
                 let now = sys::now_ms();
                 let mut changed = false;
-                let mut mirrored = false;
                 while let Ok(ev) = self.rx.try_recv() {
-                    let is_mirror = matches!(ev, AppEvent::MirroredNotify { .. });
-                    if self.state.apply(ev, now) {
-                        changed = true;
-                        mirrored |= is_mirror;
-                    }
-                }
-                if mirrored {
-                    unsafe {
-                        let _ = MessageBeep(MB_ICONASTERISK);
-                    }
+                    changed |= self.state.apply(ev, now);
                 }
                 if changed {
                     self.after_change();
