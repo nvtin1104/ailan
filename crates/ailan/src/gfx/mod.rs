@@ -684,6 +684,35 @@ impl Canvas<'_> {
         self.text(ch.encode_utf8(&mut buf), Font::icon(size), r, rgb, a);
     }
 
+    /// Icon glyph rotated around the centre of `r` by `angle_rad`.
+    pub fn glyph_rotated(&mut self, ch: char, size: f32, r: Rect, rgb: u32, a: f32, angle_rad: f32) {
+        let (cx, cy) = (r.x + r.w * 0.5, r.y + r.h * 0.5);
+        let (c, s) = (angle_rad.cos(), angle_rad.sin());
+        let rot = Matrix3x2 {
+            M11: c,
+            M12: s,
+            M21: -s,
+            M22: c,
+            M31: cx - c * cx + s * cy,
+            M32: cy - s * cx - c * cy,
+        };
+        let mut prev = Matrix3x2::default();
+        unsafe {
+            self.dc.GetTransform(&mut prev);
+            let combined = Matrix3x2 {
+                M11: rot.M11 * prev.M11 + rot.M12 * prev.M21,
+                M12: rot.M11 * prev.M12 + rot.M12 * prev.M22,
+                M21: rot.M21 * prev.M11 + rot.M22 * prev.M21,
+                M22: rot.M21 * prev.M12 + rot.M22 * prev.M22,
+                M31: rot.M31 * prev.M11 + rot.M32 * prev.M21 + prev.M31,
+                M32: rot.M31 * prev.M12 + rot.M32 * prev.M22 + prev.M32,
+            };
+            self.dc.SetTransform(&combined);
+        }
+        self.glyph(ch, size, r, rgb, a);
+        unsafe { self.dc.SetTransform(&prev) };
+    }
+
     /// Draw subsequent primitives translated by `(tx, ty)` and uniformly scaled by `s`
     /// (DIP space). Used to render the real notch UI as a miniature live preview.
     pub fn set_transform(&self, tx: f32, ty: f32, s: f32) {

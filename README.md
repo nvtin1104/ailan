@@ -31,6 +31,9 @@ A small pill rests at the top-center of the work area. Click it to open music an
   - status: Wi-Fi/Ethernet, battery and charging, headphones
   - OSD pops up when volume or brightness changes
   - banners for charging, low battery and headphones connected
+- **Notification mirroring**
+  - Zalo / mail / other app toasts appear as Dynamic Island banners (toggle in Hub → Settings)
+  - needs notification access: Settings → Privacy → Notifications → Ailan
 
 ## Build and run
 
@@ -71,4 +74,4 @@ See [docs/system-design.md](docs/system-design.md) for the system design and [do
 
 ## Roadmap
 
-Synced lyrics, file shelf (drag-drop), clipboard history, water reminder, calendar/Today, notification mirroring, installer (MSIX/Inno Setup), auto-update, settings inside the notch, per-monitor choice.
+Synced lyrics, file shelf (drag-drop), clipboard history, water reminder, calendar/Today, installer (MSIX/Inno Setup), auto-update, settings inside the notch, per-monitor choice.

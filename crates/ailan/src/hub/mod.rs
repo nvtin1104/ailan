@@ -105,6 +105,7 @@ pub enum HubAction {
     SetLanguage(Lang),
     ToggleAutostart,
     ToggleReduceMotion,
+    ToggleMirrorNotifications,
 }
 
 impl HubAction {

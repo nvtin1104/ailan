@@ -111,7 +111,7 @@ fn draw_music(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<
         None => {
             cv.fill_circle(acx, acy, ar, SURFACE, 1.0);
             cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.10);
-            cv.glyph(G_MUSIC, 18.0, art, WHITE, 0.9);
+            cv.glyph_rotated(G_MUSIC, 18.0, art, WHITE, 0.9, v.art_angle);
         }
     }
 

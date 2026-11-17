@@ -6,7 +6,62 @@ use ailan_core::time::civil;
 use ailan_core::AppState;
 
 use crate::gfx::{Align, Canvas, Font, Rect, TextStyle};
-use super::{draw_audio_bars, hover_amt, Action, Hit, View, BG, G_BELL, G_BOLT, G_BRIGHT, G_CHECKMARK, G_HEADPHONE, G_MOON, G_MUSIC, G_MUTE, G_TIMER, G_VOLUME, SURFACE, WHITE};
+use super::{
+    draw_audio_bars, hover_amt, Action, CuteMood, Hit, View, BG, G_BELL, G_BOLT, G_BRIGHT, G_CHECKMARK, G_HEADPHONE,
+    G_MESSAGE, G_MOON, G_MUSIC, G_MUTE, G_TIMER, G_VOLUME, SURFACE, WHITE,
+};
+
+const BLUSH_RGB: u32 = 0xFF7EB6;
+
+fn draw_normal_eye(cv: &mut Canvas, ex: f32, ey: f32, r: f32, gaze: (f32, f32), sparkle: bool) {
+    let er = if sparkle { r * 1.08 } else { r };
+    cv.fill_circle(ex, ey, er, WHITE, 0.95);
+    let px = ex + gaze.0.clamp(-1.0, 1.0) * er * 0.44;
+    let py = ey + gaze.1.clamp(-1.0, 1.0) * er * 0.38;
+    let pr = er * if sparkle { 0.56 } else { 0.50 };
+    cv.fill_circle(px, py, pr, BG, 1.0);
+    cv.fill_circle(px - er * 0.16, py - er * 0.16, (er * 0.18).max(0.85), WHITE, 0.95);
+    if sparkle {
+        cv.fill_circle(px + er * 0.18, py + er * 0.18, (er * 0.10).max(0.6), WHITE, 0.85);
+    }
+}
+
+fn draw_happy_eye(cv: &mut Canvas, ex: f32, ey: f32, r: f32) {
+    cv.stroke_arc(ex, ey + r * 0.35, r * 0.88, -155.0, 130.0, (r * 0.34).clamp(1.6, 2.3), WHITE, 0.96);
+}
+
+fn draw_cute_eyes(cv: &mut Canvas, cx: f32, cy: f32, eye_dx: f32, eye_r: f32, gaze: (f32, f32), mood: CuteMood, hot: bool) {
+    let mood = if hot && mood == CuteMood::Normal { CuteMood::Happy } else { mood };
+    let (lx, rx) = (cx - eye_dx, cx + eye_dx);
+    match mood {
+        CuteMood::Normal => {
+            draw_normal_eye(cv, lx, cy, eye_r, gaze, false);
+            draw_normal_eye(cv, rx, cy, eye_r, gaze, false);
+        }
+        CuteMood::Blink => {
+            let w = (eye_r * 0.30).clamp(1.5, 2.0);
+            cv.stroke_arc(lx, cy - eye_r * 0.15, eye_r * 0.85, 25.0, 130.0, w, WHITE, 0.92);
+            cv.stroke_arc(rx, cy - eye_r * 0.15, eye_r * 0.85, 25.0, 130.0, w, WHITE, 0.92);
+        }
+        CuteMood::Happy => {
+            draw_happy_eye(cv, lx, cy, eye_r);
+            draw_happy_eye(cv, rx, cy, eye_r);
+            cv.fill_circle(lx - eye_r * 1.15, cy + eye_r * 0.68, (eye_r * 0.34).max(1.5), BLUSH_RGB, 0.42);
+            cv.fill_circle(rx + eye_r * 1.15, cy + eye_r * 0.68, (eye_r * 0.34).max(1.5), BLUSH_RGB, 0.42);
+        }
+        CuteMood::Wink => {
+            draw_normal_eye(cv, lx, cy, eye_r, gaze, false);
+            draw_happy_eye(cv, rx, cy, eye_r);
+            cv.fill_circle(rx + eye_r * 1.15, cy + eye_r * 0.68, (eye_r * 0.34).max(1.5), BLUSH_RGB, 0.42);
+        }
+        CuteMood::Sparkle => {
+            draw_normal_eye(cv, lx, cy, eye_r, gaze, true);
+            draw_normal_eye(cv, rx, cy, eye_r, gaze, true);
+            cv.fill_circle(lx - eye_r * 1.15, cy + eye_r * 0.68, (eye_r * 0.34).max(1.5), BLUSH_RGB, 0.45);
+            cv.fill_circle(rx + eye_r * 1.15, cy + eye_r * 0.68, (eye_r * 0.34).max(1.5), BLUSH_RGB, 0.45);
+        }
+    }
+}
 
 pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mut Vec<Hit>) {
     let p = v.pill;
@@ -21,10 +76,10 @@ pub(super) fn draw_collapsed(cv: &mut Canvas, st: &AppState, v: &View, hits: &mu
 
     match v.mode {
         Collapsed::Minimal => {
-            cv.text("Ailan", Font::text(13.0, 600, Align::Center), p, WHITE, 0.92);
+            draw_cute_eyes(cv, p.x + p.w * 0.5, cy, 12.0, 6.2, v.gaze, v.cute_mood, v.hot);
         }
         Collapsed::Media => {
-            cv.glyph(G_MUSIC, 12.0, Rect::new(p.x + 10.0, cy - 9.0, 18.0, 18.0), WHITE, if playing { 0.95 } else { 0.45 });
+            cv.glyph_rotated(G_MUSIC, 12.0, Rect::new(p.x + 10.0, cy - 9.0, 18.0, 18.0), WHITE, if playing { 0.95 } else { 0.45 }, v.art_angle);
             // 4 equalizer bars on the right (4*2 + 3*2 = 14px wide).
             draw_audio_bars(cv, p.right() - 25.0, cy, &v.bars[..4], 2.0, 2.0, 13.0, playing);
             let tr = Rect::new(p.x + 30.0, p.y, (p.w - 61.0).max(10.0), p.h);
@@ -169,7 +224,7 @@ fn draw_collapsed_vertical(
     match v.mode {
         Collapsed::Minimal => {
             super::draw_status_ring(cv, st, cx, p.y + 28.0);
-            cv.text("Ailan", Font::text(10.5, 600, Align::Center), Rect::new(p.x, p.y + 52.0, p.w, 22.0), WHITE, 0.92);
+            draw_cute_eyes(cv, cx, p.y + 62.0, 7.5, 4.4, v.gaze, v.cute_mood, v.hot);
         }
         Collapsed::Media => {
             cv.glyph(G_MUSIC, 11.5, Rect::new(cx - 8.0, p.y + 12.0, 16.0, 16.0), WHITE, if playing { 0.95 } else { 0.45 });

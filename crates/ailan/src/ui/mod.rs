@@ -262,6 +262,16 @@ pub struct Hit {
     pub action: Action,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CuteMood {
+    #[default]
+    Normal,
+    Blink,
+    Happy,
+    Wink,
+    Sparkle,
+}
+
 pub struct View<'a> {
     pub now: i64,
     pub pill: Rect,
@@ -275,6 +285,8 @@ pub struct View<'a> {
     pub todo_scroll: usize,
     pub art: Option<(&'a ID2D1BitmapBrush1, (u32, u32))>,
     pub art_angle: f32,
+    pub gaze: (f32, f32),
+    pub cute_mood: CuteMood,
     #[allow(dead_code)]
     pub hover: Option<Action>,
     /// 0..=1 spring-interpolated hover intensity for `hover`.

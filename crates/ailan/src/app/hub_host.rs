@@ -15,7 +15,7 @@ use crate::gfx::Gfx;
 use crate::hub::controller::KeyOutcome;
 use crate::hub::{Field, HubAction};
 use crate::platform::media::MediaCmd;
-use crate::platform::{autostart, sys};
+use crate::platform::{autostart, notify_mirror, sys};
 use crate::ui;
 
 use super::{apply_cursor_icon, App, FLY_REMIND, FLY_TODO, T_HUB};
@@ -811,6 +811,11 @@ impl App {
             }
             HubAction::ToggleReduceMotion => {
                 self.state.settings.reduce_motion = !self.state.settings.reduce_motion;
+                self.state.mark_settings_dirty(now);
+            }
+            HubAction::ToggleMirrorNotifications => {
+                self.state.settings.mirror_notifications = !self.state.settings.mirror_notifications;
+                notify_mirror::set_enabled(self.state.settings.mirror_notifications);
                 self.state.mark_settings_dirty(now);
             }
         }

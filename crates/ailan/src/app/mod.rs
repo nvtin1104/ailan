@@ -44,6 +44,8 @@ const T_TICK: usize = 1;
 const T_STATS: usize = 4;
 /// Hub refresh while a live clock tool is on screen (timer).
 const T_HUB: usize = 6;
+/// Gaze tracking & cute idle eye expressions when the island rests in `Minimal`.
+const T_GAZE: usize = 7;
 
 /// Flight tints for icons that jump into the island. Not used as pill fills.
 const FLY_TODO: u32 = crate::hub::widgets::ACCENT_MINT;
@@ -130,6 +132,11 @@ pub struct App {
     hub_art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
     disc_angle: f32,
     disc_last: Instant,
+    gaze: (f32, f32),
+    cute_mood: ui::CuteMood,
+    cute_until: i64,
+    next_cute_at: i64,
+    gaze_timer_on: bool,
     scale: f32,
     /// Hit-region cache: left, top, right, bottom, radius, dock discriminant.
     region: (i32, i32, i32, i32, i32, i32),
@@ -231,6 +238,11 @@ impl App {
             hub_art: None,
             disc_angle: 0.0,
             disc_last: Instant::now(),
+            gaze: (0.0, 0.0),
+            cute_mood: ui::CuteMood::Normal,
+            cute_until: 0,
+            next_cute_at: sys::now_ms() + 3500,
+            gaze_timer_on: false,
             scale: 1.0,
             region: (0, 0, 0, 0, 0, 0),
             needs_draw: true,
@@ -649,7 +661,11 @@ impl App {
                     self.alert_w = ui::REST_W;
                     return;
                 };
-                let line = if b.icon == BannerIcon::Reminder { b.body.clone() } else { b.title.clone() };
+                let line = if matches!(b.icon, BannerIcon::Reminder | BannerIcon::Message) {
+                    b.body.clone()
+                } else {
+                    b.title.clone()
+                };
                 let extra = if b.todo_id.is_some() || b.alarm_id.is_some() {
                     70.0
                 } else if matches!(b.icon, BannerIcon::Charging | BannerIcon::BatteryLow) {
@@ -688,11 +704,14 @@ impl App {
 
     // ---- state transitions -------------------------------------------------------
 
-    /// Reminder / alarm / timer banners surface on the island even over fullscreen.
+    /// Reminder / alarm / timer / mirrored-message banners surface even over fullscreen.
     fn alert_peek(&self) -> bool {
         self.hidden
             && self.state.banner.as_ref().is_some_and(|b| {
-                matches!(b.icon, BannerIcon::Reminder | BannerIcon::Alarm | BannerIcon::TimerDone)
+                matches!(
+                    b.icon,
+                    BannerIcon::Reminder | BannerIcon::Alarm | BannerIcon::TimerDone | BannerIcon::Message
+                )
             })
     }
 
@@ -752,6 +771,76 @@ impl App {
         }
         self.arm_timer(now);
         self.sync_hub_timer();
+        self.sync_gaze_timer();
+    }
+
+    fn is_gaze_active(&self) -> bool {
+        !self.hidden && !self.expanded && self.mode == Collapsed::Minimal && !self.state.settings.reduce_motion
+    }
+
+    pub(super) fn sync_gaze_timer(&mut self) {
+        let want = self.is_gaze_active();
+        if want == self.gaze_timer_on {
+            return;
+        }
+        self.gaze_timer_on = want;
+        unsafe {
+            if want {
+                SetTimer(Some(self.hwnd), T_GAZE, 50, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), T_GAZE);
+                self.gaze = (0.0, 0.0);
+                self.cute_mood = ui::CuteMood::Normal;
+            }
+        }
+    }
+
+    pub(super) fn on_gaze_tick(&mut self) {
+        if !self.is_gaze_active() {
+            self.sync_gaze_timer();
+            return;
+        }
+        let now = sys::now_ms();
+        let mut pt = POINT::default();
+        let mut wr = windows::Win32::Foundation::RECT::default();
+        let (tx, ty) = unsafe {
+            if GetCursorPos(&mut pt).is_ok() && GetWindowRect(self.hwnd, &mut wr).is_ok() {
+                let cx = (wr.left + wr.right) as f32 * 0.5;
+                let cy = (wr.top + wr.bottom) as f32 * 0.5;
+                (
+                    ((pt.x as f32 - cx) / (360.0 * self.scale)).clamp(-1.0, 1.0),
+                    ((pt.y as f32 - cy) / (240.0 * self.scale)).clamp(-1.0, 1.0),
+                )
+            } else {
+                self.gaze
+            }
+        };
+        let dx = tx - self.gaze.0;
+        let dy = ty - self.gaze.1;
+        let gaze_moved = dx.abs() > 0.008 || dy.abs() > 0.008;
+        if gaze_moved {
+            self.gaze.0 += dx * 0.28;
+            self.gaze.1 += dy * 0.28;
+        }
+
+        let prev_mood = self.cute_mood;
+        if self.cute_mood != ui::CuteMood::Normal && now >= self.cute_until {
+            self.cute_mood = ui::CuteMood::Normal;
+            self.next_cute_at = now + 4500 + (now.abs() % 4500);
+        } else if self.cute_mood == ui::CuteMood::Normal && now >= self.next_cute_at {
+            let (mood, dur) = match (now / 17).rem_euclid(5) {
+                0 | 1 => (ui::CuteMood::Blink, 190),
+                2 => (ui::CuteMood::Happy, 1500),
+                3 => (ui::CuteMood::Wink, 1300),
+                _ => (ui::CuteMood::Sparkle, 1700),
+            };
+            self.cute_mood = mood;
+            self.cute_until = now + dur;
+        }
+
+        if gaze_moved || self.cute_mood != prev_mood {
+            self.needs_draw = true;
+        }
     }
 
     fn arm_timer(&mut self, now: i64) {
@@ -896,6 +985,14 @@ impl App {
         if !self.wants_frame() {
             return;
         }
+        if self.audio_visual_active() || self.hub_music_active() {
+            let now_d = Instant::now();
+            let d_dt = now_d.duration_since(self.disc_last).as_secs_f32().min(0.1);
+            self.disc_last = now_d;
+            self.disc_angle = (self.disc_angle + d_dt * 0.85).rem_euclid(std::f32::consts::TAU);
+        } else {
+            self.disc_last = Instant::now();
+        }
         if self.island_live() && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()) {
             let now_i = Instant::now();
             let dt = now_i.duration_since(self.last_frame).as_secs_f32();
@@ -920,14 +1017,6 @@ impl App {
             if let Some(s) = self.stats.as_mut() {
                 s.frames += 1;
             }
-        }
-        if self.audio_visual_active() || self.hub_music_active() {
-            let now_d = Instant::now();
-            let d_dt = now_d.duration_since(self.disc_last).as_secs_f32().min(0.1);
-            self.disc_last = now_d;
-            self.disc_angle = (self.disc_angle + d_dt * 0.85).rem_euclid(std::f32::consts::TAU);
-        } else {
-            self.disc_last = Instant::now();
         }
         self.step_hub_anim();
         if self.hub_open && (self.hub_needs_draw || self.hub_ctrl.animating() || self.hub_music_active()) {
@@ -964,6 +1053,8 @@ impl App {
             todo_scroll: self.todo_scroll,
             art: self.art.as_ref().map(|(a, b)| (b, (a.width, a.height))),
             art_angle: self.disc_angle,
+            gaze: self.gaze,
+            cute_mood: self.cute_mood,
             hover: self.hover,
             hover_t: self.hover_anim.value.clamp(0.0, 1.0),
             tab_pos: self.tab_pos.value.clamp(0.0, 2.0),

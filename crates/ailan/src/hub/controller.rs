@@ -538,21 +538,17 @@ impl HubController {
             let dock = Rect::new(pad_x, h - 12.0 - 44.0, sb_w - pad_x * 2.0, 44.0);
             self.spots.push(dock);
             draw_specular_card(cv, dock, RADIUS_BUTTON, 0.0, self.mouse);
-            let (col, playing) = match &st.media {
-                Some(m) if !m.title.is_empty() => (if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, true),
-                _ => (TEXT_SECTION, false),
+            let (col, has_media, is_playing) = match &st.media {
+                Some(m) if !m.title.is_empty() => (if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, true, m.playing),
+                _ => (TEXT_SECTION, false, false),
             };
-            if playing {
-                if let Some((brush, size)) = art {
-                    let ar = Rect::new(dock.x + 6.0, dock.y + 6.0, dock.w - 12.0, dock.h - 12.0);
-                    cv.image_circle_rotated(brush, size, ar, art_angle);
-                    cv.stroke_circle(ar.x + ar.w * 0.5, ar.y + ar.h * 0.5, ar.w * 0.5 - 0.5, 1.0, WHITE, 0.16);
-                } else {
-                    cv.glyph(G_MUSIC, 15.0, dock, col, 1.0);
-                }
-                self.push_hit(dock, HubAction::MediaToggle);
+            if is_playing {
+                cv.glyph_rotated(G_MUSIC, 15.0, dock, col, 1.0, art_angle);
             } else {
                 cv.glyph(G_MUSIC, 15.0, dock, col, 1.0);
+            }
+            if has_media {
+                self.push_hit(dock, HubAction::MediaToggle);
             }
         } else {
             let dock = Rect::new(pad_x, h - 12.0 - 56.0, sb_w - pad_x * 2.0, 56.0);
@@ -637,7 +633,7 @@ impl HubController {
                     None => {
                         cv.fill_circle(acx, acy, ar, BG_SURFACE_ELEVATED, 0.9);
                         cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.10);
-                        cv.glyph(G_MUSIC, 12.0, art_r, if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, 1.0);
+                        cv.glyph_rotated(G_MUSIC, 12.0, art_r, if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, 1.0, art_angle);
                     }
                 }
                 let tx = art_r.right() + 8.0;

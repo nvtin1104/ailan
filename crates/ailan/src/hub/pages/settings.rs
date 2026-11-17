@@ -115,6 +115,25 @@ pub fn draw(
         action: HubAction::ToggleReduceMotion,
     });
 
+    y += 60.0;
+
+    // Card 4: Mirror notifications onto the island
+    let mirror_row = Rect::new(r.x, y, r.w, 52.0);
+    let mirror_on = st.settings.mirror_notifications;
+    let h_mirror = if hover == Some(HubAction::ToggleMirrorNotifications) { 1.0 } else { 0.0 };
+    draw_switch_row(
+        cv,
+        mirror_row,
+        t(lang, Key::MirrorNotifsLabel),
+        Some(t(lang, Key::MirrorNotifsSub)),
+        mirror_on,
+        h_mirror,
+    );
+    hits.push(HubHit {
+        rect: mirror_row,
+        action: HubAction::ToggleMirrorNotifications,
+    });
+
     y += 74.0;
 
     // 2. About Card
