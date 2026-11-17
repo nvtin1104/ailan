@@ -49,7 +49,7 @@ Mục tiêu thiết kế: **native thuần Rust**, **không polling**, **0% CPU 
 | `platform/brightness.rs` | WMI `WmiMonitorBrightnessEvent` qua `IWbemObjectSink` (chỉ laptop). |
 | `platform/network.rs` | WinRT `NetworkInformation.NetworkStatusChanged` + SSID/số vạch sóng. |
 | `platform/power.rs` | `RegisterPowerSettingNotification` (pin %, AC/DC) + `GetSystemPowerStatus`. |
-| `platform/tray.rs` | `Shell_NotifyIconW`, menu, thông báo balloon (dùng cho nhắc việc — hoạt động cả với app không đóng gói, không cần AUMID như WinRT toast). Icon được vẽ bằng code (không cần file .ico). |
+| `platform/tray.rs` | `Shell_NotifyIconW`, menu tray. Nhắc việc / báo thức / hết giờ hiện trên Dynamic Island banner (không dùng balloon/toast hệ thống). Icon được vẽ bằng code (không cần file .ico). |
 | `platform/autostart.rs` | Khoá `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. |
 | `platform/appbar.rs` | Đăng ký app bar rỗng (`ABM_NEW`) để shell gửi `ABN_FULLSCREENAPP` khi có app/game toàn màn hình → ẩn notch. Thuần sự kiện, không cần hook foreground hay theo dõi vị trí cửa sổ. `SHQueryUserNotificationState` dùng khi khởi động. |
 | `platform/sys.rs` | Đường dẫn `%APPDATA%`, offset múi giờ, working set, EcoQoS, logger file. |

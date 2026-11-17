@@ -29,7 +29,6 @@ pub fn draw(cv: &mut Canvas, cx: &mut PageCtx, r: Rect) {
     match cx.clock_tab {
         1 => crate::hub::pages::clock::draw_alarms(cv, cx, r, y),
         2 => crate::hub::pages::clock::draw_timer(cv, cx, r, y),
-        3 => crate::hub::pages::clock::draw_world(cv, cx, r, y),
         _ => draw_reminders(cv, cx, r, y),
     }
 }

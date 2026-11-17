@@ -117,9 +117,6 @@ impl App {
             return;
         }
         self.hidden = hidden;
-        unsafe {
-            let _ = ShowWindow(self.hwnd, if hidden { SW_HIDE } else { SW_SHOWNOACTIVATE });
-        }
         if hidden {
             uninstall_outside_hook();
             unsafe { let _ = ReleaseCapture(); }
@@ -131,6 +128,7 @@ impl App {
                 g.trim();
             }
         }
+        // Visibility follows island_live() (may peek alert banners over fullscreen).
         self.after_change();
     }
 

@@ -26,7 +26,7 @@ A small pill rests at the top-center of the work area. Click it to open music an
 - **Focus**: Pomodoro timer (25/5/15 by default), with a count of sessions completed today.
 - **To-do**
   - type it and press Enter
-  - `@15:30` at the end of a task sets a reminder (shown as a banner plus a Windows notification)
+  - `@15:30` at the end of a task sets a reminder (shown as a Dynamic Island banner)
 - **Status and OSD**
   - status: Wi-Fi/Ethernet, battery and charging, headphones
   - OSD pops up when volume or brightness changes

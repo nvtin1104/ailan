@@ -92,8 +92,10 @@ fn draw_music(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<
 
     let text_x = art.right() + 12.0;
     let text_w = (p.right() - 16.0 - text_x).max(40.0);
+    let (acx, acy, ar) = (art.x + 22.0, art.y + 22.0, 22.0);
     let Some(m) = &st.media else {
-        cv.fill_round(art, 10.0, SURFACE, 1.0);
+        cv.fill_circle(acx, acy, ar, SURFACE, 1.0);
+        cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.10);
         cv.glyph(G_MUSIC, 18.0, art, WHITE, 0.55);
         cv.text(t(lang, Key::NothingPlaying), Font::text(15.0, 600, Align::Left), Rect::new(text_x, p.y + 40.0, text_w, 20.0), WHITE, 1.0);
         cv.text(t(lang, Key::NothingPlayingHint), Font::text(11.0, 400, Align::Left), Rect::new(text_x, p.y + 62.0, text_w, 16.0), TEXT_SOFT, 1.0);
@@ -102,9 +104,13 @@ fn draw_music(cv: &mut Canvas, st: &AppState, v: &View, p: Rect, hits: &mut Vec<
     };
 
     match v.art {
-        Some((brush, size)) => cv.image(brush, size, art, 10.0),
+        Some((brush, size)) => {
+            cv.image_circle_rotated(brush, size, art, v.art_angle);
+            cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.16);
+        }
         None => {
-            cv.fill_round(art, 10.0, SURFACE, 1.0);
+            cv.fill_circle(acx, acy, ar, SURFACE, 1.0);
+            cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.10);
             cv.glyph(G_MUSIC, 18.0, art, WHITE, 0.9);
         }
     }

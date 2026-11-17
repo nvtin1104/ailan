@@ -6,6 +6,8 @@
 
 use std::time::Instant;
 
+use windows::Win32::Graphics::Direct2D::ID2D1BitmapBrush1;
+
 use ailan_core::anim::Spring;
 use ailan_core::i18n::{t, Key};
 use ailan_core::reminder::{day_bucket, DayBucket};
@@ -25,9 +27,11 @@ pub const FULL_HEIGHT: i32 = 680;
 pub const HUB_MIN_W: f32 = 380.0;
 pub const HUB_MIN_H: f32 = 520.0;
 pub const HUB_DOCK_BREAK: f32 = 640.0;
+pub const SIDEBAR_ICON_BREAK: f32 = 840.0;
 
 pub const TITLE_H: f32 = 44.0;
 pub const SIDEBAR_W: f32 = 220.0;
+pub const SIDEBAR_ICON_W: f32 = 64.0;
 const NAV_Y0: f32 = 62.0;
 const NAV_STEP: f32 = 42.0;
 const NAV_H: f32 = 38.0;
@@ -65,7 +69,9 @@ pub struct HubController {
     pub capture: String,
     pub command: String,
     pub alarm_input: String,
-    /// Reminders page tab: 0 reminders, 1 alarms, 2 timer, 3 stopwatch, 4 world clock.
+    pub alarm_label_input: String,
+    pub timer_input: String,
+    /// Reminders page tab: 0 reminders, 1 alarms, 2 timer.
     pub clock_tab: usize,
     clock_ind: Indicator,
     pub todo_filter: TodoFilter,
@@ -109,16 +115,18 @@ impl HubController {
             capture: String::new(),
             command: String::new(),
             alarm_input: String::new(),
+            alarm_label_input: String::new(),
+            timer_input: String::new(),
             clock_tab: 0,
             clock_ind: Indicator::new(0),
-            todo_filter: TodoFilter::All,
+            todo_filter: TodoFilter::Today,
             collapsed: [false; 5],
             hits: Vec::new(),
             last_press: None,
             spots: Vec::new(),
             over_spot: false,
             nav: Indicator::new(0),
-            filter_ind: Indicator::new(0),
+            filter_ind: Indicator::new(TodoFilter::Today.index()),
             fade: Spring::new(100.0).with(260.0, 32.0),
             scroll: Spring::new(0.0).with(520.0, 46.0),
             scroll_max: 0.0,
@@ -138,6 +146,14 @@ impl HubController {
         self.width = w;
         self.height = h;
         self.is_compact = w < HUB_DOCK_BREAK;
+    }
+
+    pub fn is_icon_sidebar(&self) -> bool {
+        !self.is_compact && self.width < SIDEBAR_ICON_BREAK
+    }
+
+    fn sidebar_w(&self) -> f32 {
+        if self.is_icon_sidebar() { SIDEBAR_ICON_W } else { SIDEBAR_W }
     }
 
     pub fn target_size(&self) -> (i32, i32) {
@@ -172,10 +188,10 @@ impl HubController {
         if tab != self.clock_tab {
             self.restart_fade();
         }
-        self.clock_tab = tab.min(3);
+        self.clock_tab = tab.min(2);
         self.clock_ind.go(self.clock_tab);
         self.scroll_to(0.0, true);
-        if matches!(self.focus, Some(Field::Capture | Field::Alarm)) {
+        if matches!(self.focus, Some(Field::Capture | Field::Alarm | Field::AlarmLabel(_) | Field::TimerInput)) {
             self.focus = None;
         }
     }
@@ -296,6 +312,8 @@ impl HubController {
             Field::Capture => &mut self.capture,
             Field::Command => &mut self.command,
             Field::Alarm => &mut self.alarm_input,
+            Field::AlarmLabel(_) => &mut self.alarm_label_input,
+            Field::TimerInput => &mut self.timer_input,
         }
     }
 
@@ -375,7 +393,16 @@ impl HubController {
 
     // ---- drawing -------------------------------------------------------------------------
 
-    pub fn draw(&mut self, cv: &mut Canvas, st: &AppState, now: i64, w: f32, h: f32) {
+    pub fn draw(
+        &mut self,
+        cv: &mut Canvas,
+        st: &AppState,
+        now: i64,
+        w: f32,
+        h: f32,
+        art: Option<(&ID2D1BitmapBrush1, (u32, u32))>,
+        art_angle: f32,
+    ) {
         self.reduce_motion = st.settings.reduce_motion;
         self.hits.clear();
         self.spots.clear();
@@ -386,7 +413,7 @@ impl HubController {
         if self.is_compact {
             self.draw_compact(cv, st, now, w, h, &counts);
         } else {
-            self.draw_full(cv, st, now, w, h, &counts);
+            self.draw_full(cv, st, now, w, h, &counts, art, art_angle);
         }
         cv.alpha = prev_alpha;
     }
@@ -435,30 +462,44 @@ impl HubController {
         }
     }
 
-    fn draw_full(&mut self, cv: &mut Canvas, st: &AppState, now: i64, w: f32, h: f32, counts: &NavCounts) {
+    fn draw_full(
+        &mut self,
+        cv: &mut Canvas,
+        st: &AppState,
+        now: i64,
+        w: f32,
+        h: f32,
+        counts: &NavCounts,
+        art: Option<(&ID2D1BitmapBrush1, (u32, u32))>,
+        art_angle: f32,
+    ) {
         let lang = st.lang();
+        let icon_sidebar = self.is_icon_sidebar();
+        let sb_w = self.sidebar_w();
+        let pad_x = if icon_sidebar { 10.0 } else { 12.0 };
 
         // Sidebar: square fill (DWM clips the window's left corners), then a fading divider.
-        cv.fill_rect(Rect::new(0.0, 0.0, SIDEBAR_W, h), BG_SIDEBAR, BG_SIDEBAR_ALPHA);
-        draw_divider_v(cv, SIDEBAR_W - 1.0, 0.0, h);
+        cv.fill_rect(Rect::new(0.0, 0.0, sb_w, h), BG_SIDEBAR, BG_SIDEBAR_ALPHA);
+        draw_divider_v(cv, sb_w - 1.0, 0.0, h);
 
         // Brand
-        let tile = Rect::new(16.0, 10.0, 28.0, 28.0);
+        let tile = Rect::new(if icon_sidebar { (sb_w - 28.0) * 0.5 } else { 16.0 }, 10.0, 28.0, 28.0);
         draw_app_logo(cv, tile);
-        cv.text("AiLan", Font::text(15.0, 700, Align::Left), Rect::new(52.0, 9.0, 140.0, 18.0), TEXT_HERO, 1.0);
-        cv.text("Personal Hub", Font::text(11.0, 450, Align::Left), Rect::new(52.0, 26.0, 140.0, 14.0), TEXT_SECTION, 1.0);
-
+        if !icon_sidebar {
+            cv.text("AiLan", Font::text(15.0, 700, Align::Left), Rect::new(52.0, 9.0, 140.0, 18.0), TEXT_HERO, 1.0);
+            cv.text("Personal Hub", Font::text(11.0, 450, Align::Left), Rect::new(52.0, 26.0, 140.0, 14.0), TEXT_SECTION, 1.0);
+        }
 
         // Navigation with sliding indicator
         let ind_y = NAV_Y0 + self.nav.pos() * NAV_STEP;
-        let ind = Rect::new(12.0, ind_y, SIDEBAR_W - 24.0, NAV_H);
+        let ind = Rect::new(pad_x, ind_y, sb_w - pad_x * 2.0, NAV_H);
         cv.fill_round_linear(ind, RADIUS_BUTTON, ACCENT_TINT, (ind.x, ind.y), (ind.right(), ind.bottom()), 1.0);
         cv.hairline_round_linear(ind, RADIUS_BUTTON, RIM_ACCENT, (ind.x, ind.y), (ind.x, ind.bottom()), 1.0);
-        let bar = Rect::new(ind.x + 5.0, ind.y + 11.0, 3.0, 16.0);
+        let bar = Rect::new(ind.x + if icon_sidebar { 3.0 } else { 5.0 }, ind.y + 11.0, 3.0, 16.0);
         cv.fill_round_linear(bar, 1.5, ACCENT_FILL, (bar.x, bar.y), (bar.x, bar.bottom()), 1.0);
 
         for (i, page) in NAV_PAGES.iter().enumerate() {
-            let nr = Rect::new(12.0, NAV_Y0 + i as f32 * NAV_STEP, SIDEBAR_W - 24.0, NAV_H);
+            let nr = Rect::new(pad_x, NAV_Y0 + i as f32 * NAV_STEP, sb_w - pad_x * 2.0, NAV_H);
             let act = HubAction::SelectPage(*page);
             let near = 1.0 - (self.nav.pos() - i as f32).abs().min(1.0);
             let hv = self.hover_t(act);
@@ -466,36 +507,67 @@ impl HubController {
                 cv.fill_round(nr, RADIUS_BUTTON, WHITE, 0.045);
             }
             let fg = mix(if hv > 0.0 { TEXT_TITLE } else { TEXT_BODY }, TEXT_HERO, near);
-            let icon_r = Rect::new(nr.x + 14.0, nr.y, 20.0, nr.h);
+            let icon_r = if icon_sidebar { nr } else { Rect::new(nr.x + 14.0, nr.y, 20.0, nr.h) };
+            let glyph_sz = if icon_sidebar { 16.0 } else { 14.0 };
             match nav_glyph(*page) {
-                Some(g) => cv.glyph(g, 14.0, icon_r, mix(fg, ACCENT_PRIMARY_HI, near * 0.6), 1.0),
-                None => cv.text("✦", Font::text(14.0, 400, Align::Center), icon_r, mix(fg, ACCENT_PRIMARY_HI, near * 0.6), 1.0),
+                Some(g) => cv.glyph(g, glyph_sz, icon_r, mix(fg, ACCENT_PRIMARY_HI, near * 0.6), 1.0),
+                None => cv.text("✦", Font::text(glyph_sz, 400, Align::Center), icon_r, mix(fg, ACCENT_PRIMARY_HI, near * 0.6), 1.0),
             }
-            cv.text(
-                nav_label(lang, *page),
-                Font::text(13.0, if near > 0.5 { 600 } else { 500 }, Align::Left),
-                Rect::new(nr.x + 42.0, nr.y, nr.w - 90.0, nr.h),
-                fg,
-                1.0,
-            );
             let (n, rgb) = counts.for_page(*page);
-            draw_count_badge(cv, nr.right() - 10.0, nr.y + nr.h * 0.5, n, rgb);
+            if icon_sidebar {
+                if n > 0 {
+                    let (dx, dy) = (nr.x + nr.w * 0.5 + 10.0, nr.y + nr.h * 0.5 - 9.0);
+                    cv.fill_circle(dx, dy, 3.5, rgb, 1.0);
+                    cv.stroke_circle(dx, dy, 4.5, 1.5, BG_SIDEBAR, 1.0);
+                }
+            } else {
+                cv.text(
+                    nav_label(lang, *page),
+                    Font::text(13.0, if near > 0.5 { 600 } else { 500 }, Align::Left),
+                    Rect::new(nr.x + 42.0, nr.y, nr.w - 90.0, nr.h),
+                    fg,
+                    1.0,
+                );
+                draw_count_badge(cv, nr.right() - 10.0, nr.y + nr.h * 0.5, n, rgb);
+            }
             self.push_hit(nr, act);
         }
 
         // Mini Media dock pinned to the sidebar bottom
-        let dock = Rect::new(12.0, h - 12.0 - 56.0, SIDEBAR_W - 24.0, 56.0);
-        self.spots.push(dock);
-        draw_specular_card(cv, dock, RADIUS_CARD, 0.0, self.mouse);
-        self.draw_mini_dock(cv, st, dock);
+        if icon_sidebar {
+            let dock = Rect::new(pad_x, h - 12.0 - 44.0, sb_w - pad_x * 2.0, 44.0);
+            self.spots.push(dock);
+            draw_specular_card(cv, dock, RADIUS_BUTTON, 0.0, self.mouse);
+            let (col, playing) = match &st.media {
+                Some(m) if !m.title.is_empty() => (if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, true),
+                _ => (TEXT_SECTION, false),
+            };
+            if playing {
+                if let Some((brush, size)) = art {
+                    let ar = Rect::new(dock.x + 6.0, dock.y + 6.0, dock.w - 12.0, dock.h - 12.0);
+                    cv.image_circle_rotated(brush, size, ar, art_angle);
+                    cv.stroke_circle(ar.x + ar.w * 0.5, ar.y + ar.h * 0.5, ar.w * 0.5 - 0.5, 1.0, WHITE, 0.16);
+                } else {
+                    cv.glyph(G_MUSIC, 15.0, dock, col, 1.0);
+                }
+                self.push_hit(dock, HubAction::MediaToggle);
+            } else {
+                cv.glyph(G_MUSIC, 15.0, dock, col, 1.0);
+            }
+        } else {
+            let dock = Rect::new(pad_x, h - 12.0 - 56.0, sb_w - pad_x * 2.0, 56.0);
+            self.spots.push(dock);
+            draw_specular_card(cv, dock, RADIUS_CARD, 0.0, self.mouse);
+            self.draw_mini_dock(cv, st, dock, art, art_angle);
+        }
 
         // Titlebar over the content column; command bar centred on the window.
-        let bar_w = 380.0f32.min((w - SIDEBAR_W - 180.0).max(120.0));
-        let bar_x = ((w - bar_w) * 0.5).max(SIDEBAR_W + 16.0).min(w - 160.0 - bar_w);
+        let bar_w = 380.0f32.min((w - sb_w - 180.0).max(120.0));
+        let bar_x = ((w - bar_w) * 0.5).max(sb_w + 16.0).min(w - 160.0 - bar_w);
         let bar = Rect::new(bar_x, 8.0, bar_w, 28.0);
         self.draw_titlebar(cv, st, w, bar);
 
-        let content = Rect::new(SIDEBAR_W + 28.0, TITLE_H + 12.0, w - SIDEBAR_W - 56.0, h - TITLE_H - 12.0 - 20.0);
+        let content = Rect::new(sb_w + 28.0, TITLE_H + 12.0, w - sb_w - 56.0, h - TITLE_H - 12.0 - 20.0);
         self.render_page(cv, st, now, content);
     }
 
@@ -544,24 +616,47 @@ impl HubController {
         }
     }
 
-    fn draw_mini_dock(&mut self, cv: &mut Canvas, st: &AppState, r: Rect) {
+    fn draw_mini_dock(
+        &mut self,
+        cv: &mut Canvas,
+        st: &AppState,
+        r: Rect,
+        art: Option<(&ID2D1BitmapBrush1, (u32, u32))>,
+        art_angle: f32,
+    ) {
         let lang = st.lang();
-        let my = r.y + 9.0;
+        let art_r = Rect::new(r.x + 10.0, r.y + 10.0, 36.0, 36.0);
+        let (acx, acy, ar) = (art_r.x + 18.0, art_r.y + 18.0, 18.0);
         match &st.media {
             Some(m) if !m.title.is_empty() => {
-                cv.glyph(G_MUSIC, 12.0, Rect::new(r.x + 10.0, my, 22.0, 38.0), if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, 1.0);
-                cv.text(&m.title, Font::text(12.0, 600, Align::Left), Rect::new(r.x + 36.0, my + 3.0, r.w - 120.0, 16.0), TEXT_TITLE, 1.0);
-                cv.text(&m.artist, Font::text(10.5, 400, Align::Left), Rect::new(r.x + 36.0, my + 19.0, r.w - 120.0, 14.0), TEXT_SECTION, 1.0);
+                match art {
+                    Some((brush, size)) => {
+                        cv.image_circle_rotated(brush, size, art_r, art_angle);
+                        cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.16);
+                    }
+                    None => {
+                        cv.fill_circle(acx, acy, ar, BG_SURFACE_ELEVATED, 0.9);
+                        cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.10);
+                        cv.glyph(G_MUSIC, 12.0, art_r, if m.playing { ACCENT_PRIMARY_HI } else { TEXT_BODY }, 1.0);
+                    }
+                }
+                let tx = art_r.right() + 8.0;
+                let tw = (r.right() - 84.0 - tx).max(20.0);
+                cv.text(&m.title, Font::text(12.0, 600, Align::Left), Rect::new(tx, r.y + 12.0, tw, 16.0), TEXT_TITLE, 1.0);
+                cv.text(&m.artist, Font::text(10.5, 400, Align::Left), Rect::new(tx, r.y + 28.0, tw, 14.0), TEXT_SECTION, 1.0);
                 let acts = [(HubAction::MediaPrev, G_PREV), (HubAction::MediaToggle, if m.playing { G_PAUSE } else { G_PLAY }), (HubAction::MediaNext, G_NEXT)];
                 for (i, (a, g)) in acts.iter().enumerate() {
-                    let br = Rect::new(r.right() - 82.0 + i as f32 * 24.0, my + 7.0, 24.0, 24.0);
+                    let br = Rect::new(r.right() - 82.0 + i as f32 * 24.0, r.y + 16.0, 24.0, 24.0);
                     draw_icon_button(cv, br, *g, 10.0, self.hover_t(*a), false, ACCENT_PRIMARY);
                     self.push_hit(br, *a);
                 }
             }
             _ => {
-                cv.glyph(G_MUSIC, 12.0, Rect::new(r.x + 10.0, my, 22.0, 38.0), TEXT_SECTION, 1.0);
-                cv.text(t(lang, Key::NothingPlaying), Font::text(12.0, 450, Align::Left), Rect::new(r.x + 36.0, my, r.w - 46.0, 38.0), TEXT_SECTION, 1.0);
+                cv.fill_circle(acx, acy, ar, BG_SURFACE_ELEVATED, 0.7);
+                cv.stroke_circle(acx, acy, ar - 0.5, 1.0, WHITE, 0.08);
+                cv.glyph(G_MUSIC, 12.0, art_r, TEXT_SECTION, 1.0);
+                let tx = art_r.right() + 8.0;
+                cv.text(t(lang, Key::NothingPlaying), Font::text(12.0, 450, Align::Left), Rect::new(tx, r.y + 9.0, r.right() - tx - 10.0, 38.0), TEXT_SECTION, 1.0);
             }
         }
     }
@@ -608,6 +703,8 @@ impl HubController {
                 filter: self.todo_filter,
                 filter_pos: self.filter_ind.pos(),
                 alarm_input: &self.alarm_input,
+                alarm_label_input: &self.alarm_label_input,
+                timer_input: &self.timer_input,
                 clock_tab: self.clock_tab,
                 clock_tab_pos: self.clock_ind.pos(),
                 scroll,
@@ -655,7 +752,8 @@ impl HubController {
                 }
             }
         }
-        self.spots.retain(|s| s.intersect(&r).is_some() || s.x < SIDEBAR_W);
+        let sb_w = self.sidebar_w();
+        self.spots.retain(|s| s.intersect(&r).is_some() || s.x < sb_w);
     }
 }
 
@@ -759,5 +857,24 @@ mod tests {
         }
         assert!(!c.animating(), "springs must converge so the hub returns to 0% idle CPU");
         assert_eq!(c.nav.pos(), 2.0);
+    }
+
+    #[test]
+    fn defaults_and_icon_sidebar_breakpoints() {
+        let mut c = HubController::new();
+        assert_eq!(c.todo_filter, TodoFilter::Today);
+        assert_eq!(c.filter_ind.pos(), TodoFilter::Today.index() as f32);
+
+        c.apply_size(1000.0, 680.0);
+        assert!(!c.is_compact);
+        assert!(!c.is_icon_sidebar());
+
+        c.apply_size(760.0, 680.0);
+        assert!(!c.is_compact);
+        assert!(c.is_icon_sidebar());
+
+        c.apply_size(500.0, 600.0);
+        assert!(c.is_compact);
+        assert!(!c.is_icon_sidebar());
     }
 }

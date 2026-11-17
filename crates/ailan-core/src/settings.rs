@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::clock::{Alarms, WorldClock};
+use crate::clock::{default_timer_presets, Alarms, TimerPreset};
 use crate::i18n::Lang;
 use crate::todo::Todos;
 
@@ -110,15 +110,28 @@ impl Settings {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Data {
     pub todos: Todos,
     pub alarms: Alarms,
-    pub world_clocks: Vec<WorldClock>,
+    #[serde(default = "default_timer_presets")]
+    pub timer_presets: Vec<TimerPreset>,
     /// Local day number `focus_day` refers to.
     pub focus_day: i64,
     pub focus_today: u32,
+}
+
+impl Default for Data {
+    fn default() -> Self {
+        Self {
+            todos: Todos::default(),
+            alarms: Alarms::default(),
+            timer_presets: default_timer_presets(),
+            focus_day: 0,
+            focus_today: 0,
+        }
+    }
 }
 
 impl Data {

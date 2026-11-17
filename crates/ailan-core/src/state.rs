@@ -68,7 +68,7 @@ pub enum Collapsed {
 /// Fixed activity priority: Music, then To-do.
 pub const ACTIVITY_ORDER: [Tab; 2] = [Tab::Music, Tab::Todo];
 
-/// A user-facing notification the shell should also surface outside the notch.
+/// Alert fired by `tick` — the shell beeps and shows it on the Dynamic Island banner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
     pub title: String,
@@ -93,8 +93,6 @@ pub struct AppState {
 
     pub countdown: Countdown,
     pub stopwatch: Stopwatch,
-    /// UTC offsets (minutes) of `data.world_clocks`, refreshed by the shell (DST-aware).
-    pub world_offsets: Vec<Option<i32>>,
     pub osd: Option<Osd>,
     pub banner: Option<Banner>,
 
@@ -118,7 +116,6 @@ impl AppState {
             audio_device: None,
             countdown: Countdown::default(),
             stopwatch: Stopwatch::default(),
-            world_offsets: Vec::new(),
             osd: None,
             banner: None,
             save_due: None,
@@ -284,7 +281,7 @@ impl AppState {
         }
     }
 
-    /// Advance time-based state. Returns notifications to surface outside the notch.
+    /// Advance time-based state. Returns alerts the shell should beep for on the island.
     pub fn tick(&mut self, now: i64) -> Vec<Notification> {
         let lang = self.lang();
         let mut out = Vec::new();

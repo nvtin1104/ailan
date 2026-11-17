@@ -98,19 +98,34 @@ impl App {
 
     pub(super) fn sync_artwork(&mut self) {
         let want = self.state.art.clone();
-        let same = match (&want, &self.art) {
+        let same_island = match (&want, &self.art) {
             (Some(a), Some((b, _))) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         };
-        if same {
-            return;
+        if !same_island {
+            self.art = None;
+            if let (Some(a), Some(g)) = (want.as_ref(), &self.gfx) {
+                match g.create_bitmap(a.width, a.height, &a.pixels).and_then(|b| g.create_bitmap_brush(&b)) {
+                    Ok(brush) => self.art = Some((a.clone(), brush)),
+                    Err(e) => log::warn!("artwork bitmap: {e}"),
+                }
+            }
         }
-        self.art = None;
-        if let (Some(a), Some(g)) = (want, &self.gfx) {
-            match g.create_bitmap(a.width, a.height, &a.pixels).and_then(|b| g.create_bitmap_brush(&b)) {
-                Ok(brush) => self.art = Some((a, brush)),
-                Err(e) => log::warn!("artwork bitmap: {e}"),
+        let same_hub = match (&want, &self.hub_art) {
+            (Some(a), Some((b, _))) => Arc::ptr_eq(a, b),
+            (None, None) => !self.hub_open,
+            _ => false,
+        };
+        if !same_hub {
+            self.hub_art = None;
+            if self.hub_open {
+                if let (Some(a), Some(g)) = (want.as_ref(), &self.hub_gfx) {
+                    match g.create_bitmap(a.width, a.height, &a.pixels).and_then(|b| g.create_bitmap_brush(&b)) {
+                        Ok(brush) => self.hub_art = Some((a.clone(), brush)),
+                        Err(e) => log::warn!("hub artwork bitmap: {e}"),
+                    }
+                }
             }
         }
     }

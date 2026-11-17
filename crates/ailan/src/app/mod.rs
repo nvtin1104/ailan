@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use ailan_core::anim::Spring;
 use ailan_core::event::Artwork;
-use ailan_core::i18n::{t, Key};
 use ailan_core::scheduler::{self, View as SchedView};
 use ailan_core::settings::{HubPage, Settings, Tab};
 use ailan_core::state::{BannerIcon, Collapsed};
@@ -43,7 +42,7 @@ mod notch;
 
 const T_TICK: usize = 1;
 const T_STATS: usize = 4;
-/// Hub refresh while a live clock tool is on screen (stopwatch, timer, world clock).
+/// Hub refresh while a live clock tool is on screen (timer).
 const T_HUB: usize = 6;
 
 /// Flight tints for icons that jump into the island. Not used as pill fills.
@@ -122,13 +121,15 @@ pub struct App {
     scale_y: f32,
     /// Hub → island flight overlay, and when the last one landed (for the glow).
     flight: Option<crate::platform::flight::Flight>,
-    tz: crate::platform::tz::TzCache,
     /// Current `T_HUB` interval in ms (0 = off).
     hub_timer_ms: u32,
     landed_at: Option<Instant>,
     audio_bars: [f32; 5],
     hidden: bool,
     art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
+    hub_art: Option<(Arc<Artwork>, ID2D1BitmapBrush1)>,
+    disc_angle: f32,
+    disc_last: Instant,
     scale: f32,
     /// Hit-region cache: left, top, right, bottom, radius, dock discriminant.
     region: (i32, i32, i32, i32, i32, i32),
@@ -224,10 +225,12 @@ impl App {
                 .ok(),
             landed_at: None,
             audio_bars: [0.0; 5],
-            tz: Default::default(),
             hub_timer_ms: 0,
             hidden: false,
             art: None,
+            hub_art: None,
+            disc_angle: 0.0,
+            disc_last: Instant::now(),
             scale: 1.0,
             region: (0, 0, 0, 0, 0, 0),
             needs_draw: true,
@@ -685,8 +688,27 @@ impl App {
 
     // ---- state transitions -------------------------------------------------------
 
+    /// Reminder / alarm / timer banners surface on the island even over fullscreen.
+    fn alert_peek(&self) -> bool {
+        self.hidden
+            && self.state.banner.as_ref().is_some_and(|b| {
+                matches!(b.icon, BannerIcon::Reminder | BannerIcon::Alarm | BannerIcon::TimerDone)
+            })
+    }
+
+    fn island_live(&self) -> bool {
+        !self.hidden || self.alert_peek()
+    }
+
+    fn sync_island_visibility(&self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, if self.island_live() { SW_SHOWNOACTIVATE } else { SW_HIDE });
+        }
+    }
+
     fn sched_view(&self) -> SchedView {
-        SchedView { expanded: self.expanded, tab: self.tab, hidden: self.hidden }
+        // While an alert peeks over fullscreen, wake for banner expiry / island paint.
+        SchedView { expanded: self.expanded, tab: self.tab, hidden: self.hidden && !self.alert_peek() }
     }
 
     /// Recompute targets and timers after anything changed.
@@ -697,6 +719,7 @@ impl App {
         if !self.flight_active() {
             self.mode = self.state.collapsed(now);
         }
+        self.sync_island_visibility();
         if let Some(a) = &self.audio {
             a.set_spectrum_active(self.audio_visual_active());
         }
@@ -728,7 +751,6 @@ impl App {
             self.hub_needs_draw = true;
         }
         self.arm_timer(now);
-        self.refresh_world_offsets(now);
         self.sync_hub_timer();
     }
 
@@ -758,16 +780,10 @@ impl App {
         }
         self.armed = None;
         let now = sys::now_ms();
-        let lang = self.state.lang();
-        for n in self.state.tick(now) {
-            // Reminders, alarms and finished timers always raise a Windows toast (with sound).
-            let urgent = [Key::Reminder, Key::AlarmTitle, Key::ClockTimer].iter().any(|k| n.title == t(lang, *k));
-            if urgent || self.hidden {
-                self.tray.notify(&n.title, &n.body);
-            } else {
-                unsafe {
-                    let _ = MessageBeep(MB_ICONASTERISK);
-                }
+        // Alerts only surface on the Dynamic Island banner (no system tray balloon).
+        if !self.state.tick(now).is_empty() {
+            unsafe {
+                let _ = MessageBeep(MB_ICONASTERISK);
             }
         }
         self.save(false);
@@ -791,7 +807,7 @@ impl App {
     // ---- frame loop ----------------------------------------------------------------
 
     fn audio_visual_active(&self) -> bool {
-        !self.hidden
+        self.island_live()
             && !self.state.settings.reduce_motion
             && self.state.media.as_ref().is_some_and(|m| m.playing)
             && ((!self.expanded && self.mode == Collapsed::Media)
@@ -834,7 +850,7 @@ impl App {
     }
 
     fn media_marquee_active(&self) -> bool {
-        !self.hidden
+        self.island_live()
             && !self.expanded
             && !self.dock.is_vertical()
             && self.mode == Collapsed::Media
@@ -842,12 +858,21 @@ impl App {
             && self.state.media.as_ref().is_some_and(|m| m.playing && m.title.chars().count() > 16)
     }
 
+    fn hub_music_active(&self) -> bool {
+        self.hub_open
+            && !self.hub_ctrl.is_compact
+            && !self.state.settings.reduce_motion
+            && self.state.media.as_ref().is_some_and(|m| m.playing)
+    }
+
     pub fn wants_frame(&self) -> bool {
         !self.quit
-            && ((!self.hidden && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()))
+            && ((self.island_live()
+                && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()))
                 || self.hub_needs_draw
                 || self.hub_anim.is_some()
                 || self.flight_active()
+                || self.hub_music_active()
                 || (self.hub_open && self.hub_ctrl.animating()))
     }
 
@@ -871,7 +896,7 @@ impl App {
         if !self.wants_frame() {
             return;
         }
-        if !self.hidden && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()) {
+        if self.island_live() && (self.needs_draw || !self.settled() || self.media_marquee_active() || self.audio_visual_active()) {
             let now_i = Instant::now();
             let dt = now_i.duration_since(self.last_frame).as_secs_f32();
             self.last_frame = now_i;
@@ -896,8 +921,17 @@ impl App {
                 s.frames += 1;
             }
         }
+        if self.audio_visual_active() || self.hub_music_active() {
+            let now_d = Instant::now();
+            let d_dt = now_d.duration_since(self.disc_last).as_secs_f32().min(0.1);
+            self.disc_last = now_d;
+            self.disc_angle = (self.disc_angle + d_dt * 0.85).rem_euclid(std::f32::consts::TAU);
+        } else {
+            self.disc_last = Instant::now();
+        }
         self.step_hub_anim();
-        if self.hub_open && (self.hub_needs_draw || self.hub_ctrl.animating()) {
+        if self.hub_open && (self.hub_needs_draw || self.hub_ctrl.animating() || self.hub_music_active()) {
+            self.sync_artwork();
             self.hub_ctrl.advance();
             self.render_hub();
             self.hub_needs_draw = false;
@@ -929,6 +963,7 @@ impl App {
             input: self.input.as_deref(),
             todo_scroll: self.todo_scroll,
             art: self.art.as_ref().map(|(a, b)| (b, (a.width, a.height))),
+            art_angle: self.disc_angle,
             hover: self.hover,
             hover_t: self.hover_anim.value.clamp(0.0, 1.0),
             tab_pos: self.tab_pos.value.clamp(0.0, 2.0),

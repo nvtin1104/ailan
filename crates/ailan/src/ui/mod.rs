@@ -274,6 +274,7 @@ pub struct View<'a> {
     pub input: Option<&'a str>,
     pub todo_scroll: usize,
     pub art: Option<(&'a ID2D1BitmapBrush1, (u32, u32))>,
+    pub art_angle: f32,
     #[allow(dead_code)]
     pub hover: Option<Action>,
     /// 0..=1 spring-interpolated hover intensity for `hover`.

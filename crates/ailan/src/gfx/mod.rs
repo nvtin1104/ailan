@@ -1033,4 +1033,28 @@ impl Canvas<'_> {
             self.dc.FillRoundedRectangle(&rr, brush);
         }
     }
+
+    /// Fill a circle with a bitmap scaled to cover `r` and rotated around its centre.
+    pub fn image_circle_rotated(&self, brush: &ID2D1BitmapBrush1, bmp_px: (u32, u32), r: Rect, angle_rad: f32) {
+        let sx = r.w / bmp_px.0 as f32;
+        let sy = r.h / bmp_px.1 as f32;
+        let (c, s) = (angle_rad.cos(), angle_rad.sin());
+        let (hw, hh) = (r.w * 0.5, r.h * 0.5);
+        let (cx, cy) = (r.x + hw, r.y + hh);
+        let m = Matrix3x2 {
+            M11: sx * c,
+            M12: sx * s,
+            M21: -sy * s,
+            M22: sy * c,
+            M31: cx - c * hw + s * hh,
+            M32: cy - s * hw - c * hh,
+        };
+        let rad = r.w.min(r.h) * 0.5;
+        let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: rad, radiusY: rad };
+        unsafe {
+            brush.SetTransform(&m);
+            brush.SetOpacity(self.alpha);
+            self.dc.FillRoundedRectangle(&rr, brush);
+        }
+    }
 }

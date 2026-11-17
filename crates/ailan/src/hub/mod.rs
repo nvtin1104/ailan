@@ -40,6 +40,10 @@ pub enum Field {
     Command,
     /// "New alarm" input on the Reminders → Alarms tab.
     Alarm,
+    /// Inline label edit on an existing alarm card.
+    AlarmLabel(u64),
+    /// Custom duration/preset input on the Reminders → Timer tab.
+    TimerInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +86,7 @@ pub enum HubAction {
 
     // Clock tools (Reminders page)
     SetClockTab(u8),
+    AlarmNew,
     AlarmToggle(u64),
     /// Shift an alarm by ±minutes.
     AlarmShift(u64, i16),
@@ -93,8 +98,8 @@ pub enum HubAction {
     CountdownSet(u32),
     /// Add (or subtract) seconds.
     CountdownAdd(i32),
-    WorldAdd(u8),
-    WorldRemove(u8),
+    TimerPresetSave,
+    TimerPresetRemove(u8),
 
     // Settings actions
     SetLanguage(Lang),
@@ -126,7 +131,9 @@ pub struct PageCtx<'a> {
     pub capture: &'a str,
     pub search: &'a str,
     pub alarm_input: &'a str,
-    /// Selected Reminders tab (0 reminders, 1 alarms, 2 timer, 3 stopwatch, 4 world) and
+    pub alarm_label_input: &'a str,
+    pub timer_input: &'a str,
+    /// Selected Reminders tab (0 reminders, 1 alarms, 2 timer) and
     /// its spring-animated indicator position.
     pub clock_tab: usize,
     pub clock_tab_pos: f32,

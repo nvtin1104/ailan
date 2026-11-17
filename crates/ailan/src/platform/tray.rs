@@ -1,4 +1,4 @@
-//! Tray icon, context menu and balloon notifications.
+//! Tray icon and context menu.
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, POINT};
@@ -7,8 +7,8 @@ use windows::Win32::Graphics::Gdi::{
     DIB_RGB_COLORS,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME, NIM_ADD,
-    NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICONDATAW,
+    NOTIFYICON_VERSION_4,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos, SetForegroundWindow,
@@ -66,18 +66,6 @@ impl Tray {
             let _ = Shell_NotifyIconW(NIM_ADD, &nid);
             nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
             let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
-        }
-    }
-
-    /// Native Windows notification attributed to the tray icon.
-    pub fn notify(&self, title: &str, body: &str) {
-        let mut nid = self.base();
-        nid.uFlags = NIF_INFO;
-        nid.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
-        copy_wide(&mut nid.szInfoTitle, title);
-        copy_wide(&mut nid.szInfo, body);
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
         }
     }
 

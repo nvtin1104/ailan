@@ -1,4 +1,4 @@
-//! Clock tools: alarms (persisted), countdown timer, stopwatch and world clocks.
+//! Clock tools: alarms (persisted), countdown timer and stopwatch.
 //! Pure logic; the shell feeds in `now` (epoch ms) and the local UTC offset.
 
 use serde::{Deserialize, Serialize};
@@ -91,6 +91,12 @@ impl Alarms {
         if let Some(a) = self.get_mut(id) {
             a.enabled = !a.enabled;
             a.snoozed_until = None;
+        }
+    }
+
+    pub fn set_label(&mut self, id: u64, label: String) {
+        if let Some(a) = self.get_mut(id) {
+            a.label = label;
         }
     }
 
@@ -293,32 +299,62 @@ impl Stopwatch {
     }
 }
 
-/// A city shown in the world clock; `tz` is a Windows time-zone id.
+/// Saved countdown preset with a custom label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorldClock {
-    pub city: String,
-    pub tz: String,
+pub struct TimerPreset {
+    pub label: String,
+    pub seconds: u32,
 }
 
-/// Cities offered in the world-clock picker: `(city, Windows time-zone id)`.
-pub const CITY_PRESETS: [(&str, &str); 16] = [
-    ("Hà Nội", "SE Asia Standard Time"),
-    ("Tokyo", "Tokyo Standard Time"),
-    ("Seoul", "Korea Standard Time"),
-    ("Singapore", "Singapore Standard Time"),
-    ("Bắc Kinh", "China Standard Time"),
-    ("Sydney", "AUS Eastern Standard Time"),
-    ("Dubai", "Arabian Standard Time"),
-    ("Mumbai", "India Standard Time"),
-    ("Moscow", "Russian Standard Time"),
-    ("Berlin", "W. Europe Standard Time"),
-    ("Paris", "Romance Standard Time"),
-    ("London", "GMT Standard Time"),
-    ("New York", "Eastern Standard Time"),
-    ("Chicago", "Central Standard Time"),
-    ("Los Angeles", "Pacific Standard Time"),
-    ("São Paulo", "E. South America Standard Time"),
-];
+pub fn default_timer_presets() -> Vec<TimerPreset> {
+    vec![
+        TimerPreset { label: "Nghỉ ngắn".into(), seconds: 5 * 60 },
+        TimerPreset { label: "Đọc sách".into(), seconds: 15 * 60 },
+        TimerPreset { label: "Pomodoro".into(), seconds: 25 * 60 },
+        TimerPreset { label: "Tập trung".into(), seconds: 45 * 60 },
+        TimerPreset { label: "Học bài".into(), seconds: 60 * 60 },
+    ]
+}
+
+/// Parse a timer input like `"15"`, `"15m"`, `"90s"`, `"1h30"`, `"05:30"`, or `"25m Pomodoro"`.
+/// Returns `(seconds, optional_label)`.
+pub fn parse_timer_input(raw: &str) -> Option<(u32, Option<String>)> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut parts = s.splitn(2, char::is_whitespace);
+    let head = parts.next()?.trim();
+    let tail = parts.next().map(|t| t.trim()).filter(|t| !t.is_empty()).map(str::to_string);
+
+    let secs = if head.contains(':') {
+        let nums: Vec<u32> = head.split(':').map(|p| p.parse::<u32>().ok()).collect::<Option<Vec<_>>>()?;
+        match nums.as_slice() {
+            [m, sec] if *sec < 60 => m.saturating_mul(60).saturating_add(*sec),
+            [h, m, sec] if *m < 60 && *sec < 60 => h.saturating_mul(3600).saturating_add(m * 60 + *sec),
+            _ => return None,
+        }
+    } else {
+        let lower = head.to_lowercase();
+        if let Some(h_idx) = lower.find('h') {
+            let h: u32 = lower[..h_idx].parse().ok()?;
+            let rest = lower[h_idx + 1..].trim_end_matches(['m', 'p']);
+            let m: u32 = if rest.is_empty() { 0 } else { rest.parse().ok()? };
+            h.saturating_mul(3600).saturating_add(m.saturating_mul(60))
+        } else if let Some(m_str) = lower.strip_suffix('m').or_else(|| lower.strip_suffix('p')) {
+            m_str.parse::<u32>().ok()?.saturating_mul(60)
+        } else if let Some(s_str) = lower.strip_suffix('s') {
+            s_str.parse::<u32>().ok()?
+        } else {
+            lower.parse::<u32>().ok()?.saturating_mul(60)
+        }
+    };
+
+    if secs == 0 {
+        return None;
+    }
+    Some((secs.min(24 * 3600 - 1), tail))
+}
 
 /// `mm:ss`, or `h:mm:ss` from one hour.
 pub fn fmt_hms(ms: i64) -> String {
@@ -429,5 +465,21 @@ mod tests {
         assert_eq!(fmt_hms(3_725_000), "1:02:05");
         assert_eq!(fmt_hms(500), "00:01", "rounds up so 0 shows only at the end");
         assert_eq!(fmt_stopwatch(61_234), "01:01.2");
+    }
+
+    #[test]
+    fn alarm_label_and_timer_input_parsing() {
+        let mut a = Alarms::default();
+        let id = a.add(7, 0, "wake".into(), 0);
+        a.set_label(id, "Họp sáng".into());
+        assert_eq!(a.items[0].label, "Họp sáng");
+
+        assert_eq!(parse_timer_input("15"), Some((900, None)));
+        assert_eq!(parse_timer_input("25m Pomodoro"), Some((1500, Some("Pomodoro".into()))));
+        assert_eq!(parse_timer_input("05:30"), Some((330, None)));
+        assert_eq!(parse_timer_input("1h30 Deep work"), Some((5400, Some("Deep work".into()))));
+        assert_eq!(parse_timer_input("90s"), Some((90, None)));
+        assert_eq!(parse_timer_input("0"), None);
+        assert_eq!(parse_timer_input(""), None);
     }
 }

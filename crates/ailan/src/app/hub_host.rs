@@ -425,7 +425,6 @@ impl App {
         let on_clock = self.hub_open && self.hub_ctrl.active_page == HubPage::Reminders;
         let want = match (on_clock, self.hub_ctrl.clock_tab) {
             (true, 2) if st.countdown.is_running() => 250,
-            (true, 3) => 1000,
             _ => 0,
         };
         if want == self.hub_timer_ms {
@@ -439,12 +438,6 @@ impl App {
                 SetTimer(Some(self.hub_hwnd), T_HUB, want, None);
             }
         }
-    }
-
-    /// DST-aware offsets for the world clock (cached zone lookups, cheap per call).
-    pub(super) fn refresh_world_offsets(&mut self, now: i64) {
-        let offs: Vec<Option<i32>> = self.state.data.world_clocks.iter().map(|w| self.tz.offset_min(&w.tz, now)).collect();
-        self.state.world_offsets = offs;
     }
 
     pub(super) fn on_hub_action(&mut self, action: HubAction) {
@@ -579,6 +572,17 @@ impl App {
                 return;
             }
             HubAction::FocusField(f) => {
+                if let Field::AlarmLabel(id) = f {
+                    self.hub_ctrl.alarm_label_input = self
+                        .state
+                        .data
+                        .alarms
+                        .items
+                        .iter()
+                        .find(|a| a.id == id)
+                        .map(|a| a.label.clone())
+                        .unwrap_or_default();
+                }
                 self.hub_ctrl.focus = Some(f);
                 unsafe {
                     let _ = SetForegroundWindow(self.hub_hwnd);
@@ -604,6 +608,35 @@ impl App {
                 self.sync_hub_timer();
                 self.hub_needs_draw = true;
                 return;
+            }
+            HubAction::AlarmNew => {
+                if !self.hub_ctrl.alarm_input.trim().is_empty() {
+                    return self.on_hub_action(HubAction::SubmitField(Field::Alarm));
+                }
+                let id = self.state.data.alarms.add(7, 0, String::new(), 0);
+                self.state.mark_data_dirty(now);
+                self.hub_ctrl.alarm_label_input.clear();
+                self.hub_ctrl.focus = Some(Field::AlarmLabel(id));
+                self.launch_flight(ui::G_BELL, FLY_REMIND);
+            }
+            HubAction::SubmitField(Field::AlarmLabel(id)) => {
+                let label: String = self.hub_ctrl.take_field(Field::AlarmLabel(id)).trim().chars().take(MAX_TEXT).collect();
+                self.state.data.alarms.set_label(id, label);
+                self.hub_ctrl.focus = None;
+                self.state.mark_data_dirty(now);
+            }
+            HubAction::SubmitField(Field::TimerInput) => {
+                let raw = self.hub_ctrl.take_field(Field::TimerInput);
+                if let Some((secs, _)) = ailan_core::clock::parse_timer_input(&raw) {
+                    if self.state.countdown.is_active() {
+                        self.state.countdown.reset();
+                    }
+                    self.state.countdown.set_duration(secs as i64 * 1000);
+                    self.hub_ctrl.focus = None;
+                } else {
+                    self.hub_ctrl.timer_input = raw;
+                    self.hub_ctrl.focus = Some(Field::TimerInput);
+                }
             }
             HubAction::SubmitField(Field::Alarm) => {
                 let input = self.hub_ctrl.take_field(Field::Alarm);
@@ -643,10 +676,40 @@ impl App {
                 self.state.mark_data_dirty(now);
             }
             HubAction::CountdownToggle => {
+                if !self.state.countdown.is_active() && !self.hub_ctrl.timer_input.trim().is_empty() {
+                    let raw = self.hub_ctrl.take_field(Field::TimerInput);
+                    if let Some((secs, _)) = ailan_core::clock::parse_timer_input(&raw) {
+                        self.state.countdown.set_duration(secs as i64 * 1000);
+                    } else {
+                        self.hub_ctrl.timer_input = raw;
+                    }
+                }
                 let was = self.state.countdown.is_running();
                 self.state.countdown.toggle(now);
                 if !was && self.state.countdown.is_running() {
                     self.launch_flight(ui::G_TIMER, FLY_REMIND);
+                }
+            }
+            HubAction::TimerPresetSave => {
+                let raw = self.hub_ctrl.take_field(Field::TimerInput);
+                if let Some((secs, opt_label)) = ailan_core::clock::parse_timer_input(&raw) {
+                    let label = opt_label.unwrap_or_else(|| ailan_core::clock::fmt_hms(secs as i64 * 1000));
+                    let label: String = label.chars().take(40).collect();
+                    self.state.data.timer_presets.push(ailan_core::clock::TimerPreset { label, seconds: secs });
+                    if !self.state.countdown.is_active() {
+                        self.state.countdown.set_duration(secs as i64 * 1000);
+                    }
+                    self.hub_ctrl.focus = None;
+                    self.state.mark_data_dirty(now);
+                } else {
+                    self.hub_ctrl.timer_input = raw;
+                    self.hub_ctrl.focus = Some(Field::TimerInput);
+                }
+            }
+            HubAction::TimerPresetRemove(i) => {
+                if (i as usize) < self.state.data.timer_presets.len() {
+                    self.state.data.timer_presets.remove(i as usize);
+                    self.state.mark_data_dirty(now);
                 }
             }
             HubAction::CountdownReset => self.state.countdown.reset(),
@@ -667,20 +730,6 @@ impl App {
                     self.state.countdown.add(now, ms.max(1000 - rem));
                 } else {
                     self.state.countdown.add(now, ms);
-                }
-            }
-            HubAction::WorldAdd(i) => {
-                if let Some((city, tz)) = ailan_core::clock::CITY_PRESETS.get(i as usize) {
-                    if !self.state.data.world_clocks.iter().any(|w| w.tz == *tz) {
-                        self.state.data.world_clocks.push(ailan_core::clock::WorldClock { city: (*city).into(), tz: (*tz).into() });
-                        self.state.mark_data_dirty(now);
-                    }
-                }
-            }
-            HubAction::WorldRemove(i) => {
-                if (i as usize) < self.state.data.world_clocks.len() {
-                    self.state.data.world_clocks.remove(i as usize);
-                    self.state.mark_data_dirty(now);
                 }
             }
             HubAction::SubmitField(f @ (Field::Capture | Field::Command)) => {
@@ -778,8 +827,10 @@ impl App {
         let now = sys::now_ms();
         let state = &self.state;
         let ctrl = &mut self.hub_ctrl;
+        let art = self.hub_art.as_ref().map(|(a, b)| (b, (a.width, a.height)));
+        let art_angle = self.disc_angle;
         let result = match self.hub_gfx.as_mut() {
-            Some(g) => g.draw(|cv| ctrl.draw(cv, state, now, dip_w as f32, dip_h as f32)),
+            Some(g) => g.draw(|cv| ctrl.draw(cv, state, now, dip_w as f32, dip_h as f32, art, art_angle)),
             None => return,
         };
         if let Err(e) = result {
@@ -787,6 +838,7 @@ impl App {
             let wpx = (dip_w as f32 * hs).ceil() as u32;
             let hpx = (dip_h as f32 * hs).ceil() as u32;
             self.hub_gfx = Gfx::new(self.hub_hwnd, wpx, hpx, hs).ok();
+            self.hub_art = None;
             self.hub_needs_draw = true;
         }
     }
@@ -815,10 +867,6 @@ impl App {
                 return Some(LRESULT(0));
             }
             WM_TIMER if wparam.0 == T_HUB => {
-                let now = sys::now_ms();
-                if self.state.world_offsets.len() != self.state.data.world_clocks.len() || self.hub_ctrl.clock_tab == 3 {
-                    self.refresh_world_offsets(now);
-                }
                 self.hub_needs_draw = true;
                 return Some(LRESULT(0));
             }
